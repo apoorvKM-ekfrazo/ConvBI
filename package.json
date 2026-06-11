@@ -1,0 +1,23 @@
+{
+  "name": "convbi-v2",
+  "version": "2.0.0",
+  "description": "ConvBI v2 — Conversational BI with DuckDB, Voice, and Multi-Source Connectors",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "install-deps": "npm install"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1063.0",
+    "@google-cloud/bigquery": "^7.9.4",
+    "@google-cloud/storage": "^7.19.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "duckdb": "^1.4.4",
+    "express": "^4.18.4",
+    "multer": "^1.4.5-lts.1",
+    "papaparse": "^5.5.3",
+    "snowflake-sdk": "^1.15.0",
+    "xlsx": "^0.18.5"
+  }
+}

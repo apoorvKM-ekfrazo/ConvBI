@@ -1,0 +1,5 @@
+
+  ConvBI v2 running at http://127.0.0.1:3001
+  Dashboard     → http://127.0.0.1:3001/dashboard
+  API ping      → http://127.0.0.1:3001/api/ping
+

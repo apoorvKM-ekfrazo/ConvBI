@@ -1,0 +1,23 @@
+# ── Secrets & credentials ─────────────────────────────────────────
+.env
+openai_apikey
+claude_apikey
+databricks_config
+query-cache.json
+*.pem
+*.key
+*.p12
+
+# ── Node ──────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+.npm
+
+# ── OS ────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Uploads / temp ────────────────────────────────────────────────
+uploads/
+tmp/
+*.tmp
