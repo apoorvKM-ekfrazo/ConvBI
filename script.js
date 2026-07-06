@@ -1678,7 +1678,19 @@ function formatRows(rows) {
 
 function normalizeDateString(text) {
   if (!text) return null;
-  const value = text.trim();
+  const value = text.toString().trim();
+
+  // Handle Excel serial dates (numbers like 46023)
+  if (!isNaN(value) && value > 100 && value < 100000) {
+    const excelDate = new Date((value - 25569) * 86400 * 1000);
+    if (!isNaN(excelDate.getTime())) {
+      const y = excelDate.getUTCFullYear();
+      const m = String(excelDate.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(excelDate.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+  }
+
   const iso = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
 

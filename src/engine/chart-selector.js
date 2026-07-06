@@ -4,14 +4,14 @@
  * Computes per-candidate scores with actual DuckDB queries; rejects flat/useless charts.
  */
 
-const DARK_COLORS = ['#58A6FF','#3FB950','#D29922','#F85149','#BC8CFF','#79C0FF'];
-const DARK_GRID   = { top:40, right:20, bottom:40, left:60 };
+const DARK_COLORS = ['#6F42C1','#007BFF','#00CCCC','#0DCAF0','#17A2B8','#D97706'];
+const DARK_GRID   = { top:16, right:16, bottom:48, left:16, containLabel:true };
 const DARK_AXIS   = {
-  axisLine:  { lineStyle:{ color:'#30363D' } },
-  splitLine: { lineStyle:{ color:'#21262D' } },
-  axisLabel: { color:'#8B949E', fontSize:11 }
+  axisLine:  { lineStyle:{ color:'#E5E7EB' } },
+  splitLine: { lineStyle:{ color:'#F3F4F6' } },
+  axisLabel: { color:'#6B7280', fontSize:11 }
 };
-const DARK_TIP = { trigger:'axis', backgroundColor:'#161B22', borderColor:'#30363D', textStyle:{ color:'#E6EDF3', fontSize:12 } };
+const DARK_TIP = { trigger:'axis', backgroundColor:'#FFFFFF', borderColor:'#E5E7EB', textStyle:{ color:'#111827', fontSize:12 } };
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -187,19 +187,13 @@ async function _scoreCandidate(candidate, tableName, columns, rowCount, primaryM
 // ── ECharts option builders ───────────────────────────────────────────────────
 
 function _title(candidate) {
-  const t = candidate.insightTitle
-    || `${candidate.yCol.replace(/_/g,' ')} by ${candidate.xCol.replace(/_/g,' ')}`;
-  const s = `${candidate.yCol} × ${candidate.xCol}`;
-  return {
-    text: t, subtext: s,
-    textStyle:    { color:'#E6EDF3', fontSize:13 },
-    subtextStyle: { color:'#8B949E', fontSize:11 }
-  };
+  // Title is intentionally omitted — the client card header renders the label.
+  // Returning an empty object keeps option shape valid without duplicating text.
+  return {};
 }
 
 function _barOption(labels, vals, candidate) {
   return {
-    title:   _title(candidate),
     grid:    DARK_GRID,
     tooltip: DARK_TIP,
     xAxis:   { type:'category', data:labels, ...DARK_AXIS,
@@ -208,51 +202,50 @@ function _barOption(labels, vals, candidate) {
     series:  [{ type:'bar', data:vals,
       itemStyle:{ borderRadius:[4,4,0,0], color:{
         type:'linear', x:0,y:0,x2:0,y2:1,
-        colorStops:[{offset:0,color:'#58A6FF'},{offset:1,color:'#1f6feb'}]
+        colorStops:[{offset:0,color:'#9d71d9'},{offset:1,color:'#6F42C1'}]
       }},
-      label:{ show:labels.length <= 10, position:'top', color:'#8B949E', fontSize:10 }
+      label:{ show:labels.length <= 10, position:'top', color:'#6B7280', fontSize:10 }
     }]
   };
 }
 
 function _donutOption(labels, vals, candidate) {
   return {
-    title:   { ..._title(candidate), left:'center' },
-    tooltip: { trigger:'item', backgroundColor:'#161B22', borderColor:'#30363D', textStyle:{ color:'#E6EDF3' } },
-    legend:  { orient:'vertical', right:10, top:'center', textStyle:{ color:'#8B949E' } },
-    series:  [{ type:'pie', radius:['40%','70%'], center:['40%','50%'],
+    tooltip: { trigger:'item', backgroundColor:'#FFFFFF', borderColor:'#E5E7EB', textStyle:{ color:'#111827' } },
+    legend:  { orient:'vertical', right:10, top:'center', textStyle:{ color:'#4B5563' } },
+    series:  [{ type:'pie', radius:['42%','70%'], center:['40%','50%'],
       data: labels.map((l, i) => ({ name:l, value:vals[i], itemStyle:{ color:DARK_COLORS[i % DARK_COLORS.length] } })),
-      label:    { color:'#8B949E', fontSize:11 },
-      labelLine:{ lineStyle:{ color:'#30363D' } }
+      label:    { color:'#6B7280', fontSize:11 },
+      labelLine:{ lineStyle:{ color:'#E5E7EB' } }
     }]
   };
 }
 
 function _lineOption(labels, vals, candidate) {
   return {
-    title:   _title(candidate),
     grid:    DARK_GRID,
     tooltip: DARK_TIP,
     xAxis:   { type:'category', data:labels, ...DARK_AXIS,
                axisLabel:{ ...DARK_AXIS.axisLabel, rotate:labels.length > 8 ? 30 : 0 } },
     yAxis:   { type:'value', ...DARK_AXIS },
     series:  [{ type:'line', data:vals, smooth:true,
-      lineStyle:{ width:2, color:DARK_COLORS[0] },
+      lineStyle:{ width:2.5, color:DARK_COLORS[0] },
       itemStyle:{ color:DARK_COLORS[0] },
-      areaStyle:{ color:DARK_COLORS[0], opacity:0.07 },
-      symbol:'circle', symbolSize:4
+      areaStyle:{ color:DARK_COLORS[0], opacity:0.08 },
+      symbol:'circle', symbolSize:5
     }]
   };
 }
 
 function _scatterOption(pts, candidate) {
   return {
-    title:   _title(candidate),
     grid:    DARK_GRID,
-    tooltip: { trigger:'item', backgroundColor:'#161B22', borderColor:'#30363D', textStyle:{ color:'#E6EDF3' } },
-    xAxis:   { type:'value', name:candidate.xCol.replace(/_/g,' '), nameLocation:'middle', nameGap:25, ...DARK_AXIS },
-    yAxis:   { type:'value', name:candidate.yCol.replace(/_/g,' '), nameLocation:'middle', nameGap:40, ...DARK_AXIS },
-    series:  [{ type:'scatter', data:pts, itemStyle:{ color:'#58A6FF', opacity:0.6 }, symbolSize:6 }]
+    tooltip: { trigger:'item', backgroundColor:'#FFFFFF', borderColor:'#E5E7EB', textStyle:{ color:'#111827' } },
+    xAxis:   { type:'value', name:candidate.xCol.replace(/_/g,' '), nameLocation:'middle', nameGap:28,
+               nameTextStyle:{ color:'#6B7280' }, ...DARK_AXIS },
+    yAxis:   { type:'value', name:candidate.yCol.replace(/_/g,' '), nameLocation:'middle', nameGap:44,
+               nameTextStyle:{ color:'#6B7280' }, ...DARK_AXIS },
+    series:  [{ type:'scatter', data:pts, itemStyle:{ color:'#007BFF', opacity:0.55 }, symbolSize:6 }]
   };
 }
 

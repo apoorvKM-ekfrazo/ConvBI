@@ -28,14 +28,91 @@ function showSection(name) {
   }, 60);
 }
 
+// Normalize any ECharts option to the light palette before rendering
+function _normalizeOption(option) {
+  // Deep-clone to avoid mutating the source
+  const opt = JSON.parse(JSON.stringify(option));
+
+  // Strip built-in title/subtext — the card HTML header already shows them
+  delete opt.title;
+
+  // Light axis overrides
+  const lightLine  = { lineStyle: { color: '#E5E7EB' } };
+  const lightSplit = { lineStyle: { color: '#F3F4F6' } };
+  const lightLabel = { color: '#6B7280', fontSize: 11 };
+  const applyAxis = ax => {
+    if (!ax) return ax;
+    ax.axisLine  = lightLine;
+    ax.splitLine = lightSplit;
+    ax.axisLabel = { ...lightLabel, ...(ax.axisLabel || {}), color: '#6B7280' };
+    return ax;
+  };
+  if (opt.xAxis) opt.xAxis = applyAxis(opt.xAxis);
+  if (opt.yAxis) opt.yAxis = applyAxis(opt.yAxis);
+
+  // Light tooltip
+  if (opt.tooltip) {
+    opt.tooltip.backgroundColor = '#FFFFFF';
+    opt.tooltip.borderColor     = '#E5E7EB';
+    opt.tooltip.textStyle       = { color: '#111827', fontSize: 12 };
+  }
+
+  // Light legend
+  if (opt.legend) opt.legend.textStyle = { color: '#4B5563' };
+
+  // containLabel so labels never clip
+  if (opt.grid) {
+    opt.grid.containLabel = true;
+    opt.grid.top    = opt.grid.top    ?? 16;
+    opt.grid.bottom = opt.grid.bottom ?? 48;
+    opt.grid.left   = opt.grid.left   ?? 16;
+    opt.grid.right  = opt.grid.right  ?? 16;
+  }
+
+  // Palette swap for series
+  const OLD_DARK = ['#58A6FF','#3FB950','#D29922','#F85149','#BC8CFF','#79C0FF'];
+  (opt.series || []).forEach((s, i) => {
+    // Swap old-palette solid colors
+    if (s.itemStyle?.color && typeof s.itemStyle.color === 'string' && OLD_DARK.includes(s.itemStyle.color)) {
+      s.itemStyle.color = DARK_COLORS[OLD_DARK.indexOf(s.itemStyle.color) % DARK_COLORS.length];
+    }
+    // Swap old-palette linear gradient (bar charts)
+    if (s.itemStyle?.color?.colorStops) {
+      s.itemStyle.color = { type:'linear', x:0,y:0,x2:0,y2:1,
+        colorStops:[{offset:0,color:'#9d71d9'},{offset:1,color:'#6F42C1'}] };
+    }
+    // Swap old-palette line colors
+    if (s.lineStyle?.color && OLD_DARK.includes(s.lineStyle.color)) {
+      s.lineStyle.color = DARK_COLORS[i % DARK_COLORS.length];
+    }
+    if (s.areaStyle?.color && OLD_DARK.includes(s.areaStyle.color)) {
+      s.areaStyle.color = DARK_COLORS[i % DARK_COLORS.length];
+    }
+    // Fix pie slice colors
+    if (s.type === 'pie' && s.data) {
+      s.data.forEach((d, di) => {
+        if (d.itemStyle?.color && OLD_DARK.includes(d.itemStyle.color)) {
+          d.itemStyle.color = DARK_COLORS[di % DARK_COLORS.length];
+        }
+      });
+      if (s.label?.color === '#8B949E') s.label.color = '#6B7280';
+      if (s.labelLine?.lineStyle?.color === '#30363D') s.labelLine.lineStyle.color = '#E5E7EB';
+    }
+    // Fix axis labels
+    if (s.label?.color === '#8B949E') s.label.color = '#6B7280';
+  });
+
+  return opt;
+}
+
 // Try to initialize a chart — returns true if succeeded (element visible)
 function tryInitChart(id, option) {
   const el = document.getElementById(id);
   if (!el || typeof echarts === 'undefined') return false;
   if (el.offsetWidth === 0) return false;  // still hidden
   if (el._chartInited) return true;
-  const chart = echarts.init(el, 'dark');
-  chart.setOption({ ...option, backgroundColor: 'transparent' });
+  const chart = echarts.init(el);
+  chart.setOption({ ..._normalizeOption(option), backgroundColor: 'transparent' });
   allCharts.push(chart);
   el._chartInited = true;
   return true;
@@ -135,12 +212,13 @@ function renderKPIStrip(samples) {
   for (const [name, d] of Object.entries(samples)) {
     totalRows += d.rowCount || d.rows?.length || 0;
     const numCols = (d.columns||[]).filter(c =>
-      ['INTEGER','BIGINT','DOUBLE','FLOAT','REAL'].some(t => (c.type||'').toUpperCase().startsWith(t))
+      ['INTEGER','BIGINT','DOUBLE','FLOAT','REAL'].some(t => (c.type||'').toUpperCase().startsWith(t)) &&
+      !/date|time|start|end|month|week|year|quarter/i.test(c.name)  // Exclude all temporal columns
     );
     numCols.slice(0, 2).forEach(col => {
       const vals = (d.rows||[]).map(r => +r[col.name]).filter(v => !isNaN(v));
       if (!vals.length) return;
-      const isRate = /pct|rate|eff|util/i.test(col.name);
+      const isPercent = /pct|percentage|%/i.test(col.name);
       const sum = vals.reduce((a,b)=>a+b, 0);
       const avg = sum / vals.length;
       // trend: compare first half vs second half
@@ -149,9 +227,19 @@ function renderKPIStrip(samples) {
       const avg2 = vals.length-half > 0 ? vals.slice(half).reduce((a,b)=>a+b,0)/(vals.length-half) : avg;
       const pct  = avg1 ? ((avg2-avg1)/Math.abs(avg1)*100) : 0;
       const dir  = pct > 1 ? 'up' : pct < -1 ? 'down' : 'flat';
+      // Format value: show average for rates/percentages, sum for totals
+      let displayValue;
+      if (isPercent) {
+        displayValue = avg.toFixed(1) + '%';
+      } else if (/total|sum|count/i.test(col.name)) {
+        displayValue = Math.round(sum).toLocaleString();
+      } else {
+        // For rates without units specified, show avg (e.g., daily rate)
+        displayValue = Math.round(avg).toLocaleString();
+      }
       kpis.push({
         label: col.name.replace(/_/g,' '),
-        value: isRate ? avg.toFixed(1)+'%' : Math.round(sum).toLocaleString(),
+        value: displayValue,
         trend: dir, pct: Math.abs(pct).toFixed(1), table: name
       });
     });
@@ -245,14 +333,14 @@ function renderRelationshipMap(names, relData) {
     };
   });
 
-  const sourceColor = s => ({ databricks: '#3FB950', s3: '#D29922', file: '#58A6FF' })[s] || '#58A6FF';
+  const sourceColor = s => ({ databricks: '#00CCCC', s3: '#D97706', file: '#6F42C1' })[s] || '#6F42C1';
 
   // Draw edges first
   let edges = '';
   (relData.joins||[]).forEach(j => {
     const pa = positions[j.tableA], pb = positions[j.tableB];
     if (!pa||!pb) return;
-    const color = j.confidence > 0.8 ? '#3FB950' : j.confidence > 0.5 ? '#D29922' : '#6E7681';
+    const color = j.confidence > 0.8 ? '#00CCCC' : j.confidence > 0.5 ? '#D97706' : '#9CA3AF';
     const dash  = j.confidence > 0.8 ? '' : 'stroke-dasharray="5,4"';
     edges += `<line x1="${pa.x}" y1="${pa.y}" x2="${pb.x}" y2="${pb.y}" stroke="${color}" stroke-width="1.5" opacity="0.6" ${dash}/>`;
     const mx = (pa.x+pb.x)/2, my = (pa.y+pb.y)/2;
@@ -267,10 +355,10 @@ function renderRelationshipMap(names, relData) {
     const color = sourceColor(t.source || 'file');
     nodes += `
       <rect x="${x-nodeW/2}" y="${y-nodeH/2}" width="${nodeW}" height="${nodeH}" rx="6"
-            fill="rgba(22,27,34,.95)" stroke="${color}" stroke-width="1.5"/>
+            fill="#FFFFFF" stroke="${color}" stroke-width="1.5"/>
       <text x="${x}" y="${y-8}" fill="${escapeHtml(color)}" font-size="12" font-weight="600" text-anchor="middle">${escapeHtml(name.slice(0,18))}</text>
-      <text x="${x}" y="${y+8}" fill="#8B949E" font-size="10" text-anchor="middle">${(t.rowCount||0).toLocaleString()} rows · ${(t.columns||[]).length} cols</text>
-      <text x="${x}" y="${y+22}" fill="#6E7681" font-size="9" text-anchor="middle">${escapeHtml(t.source||'file')}</text>`;
+      <text x="${x}" y="${y+8}" fill="#6B7280" font-size="10" text-anchor="middle">${(t.rowCount||0).toLocaleString()} rows · ${(t.columns||[]).length} cols</text>
+      <text x="${x}" y="${y+22}" fill="#9CA3AF" font-size="9" text-anchor="middle">${escapeHtml(t.source||'file')}</text>`;
   });
 
   const svgH = Math.max(H, rows * (nodeH + padding*1.5) + padding*2);
@@ -308,7 +396,7 @@ async function renderSmartCharts(tableNames, containerId, maxCharts) {
   let count = 0;
 
   for (const def of allDefs.slice(0, maxCharts)) {
-    const cid  = `sc_${def.tableName.replace(/[^a-z0-9]/gi,'_')}_${count}`;
+    const cid  = `sc_${containerId}_${def.tableName.replace(/[^a-z0-9]/gi,'_')}_${count}`;
     const title = def.option?.title?.text || `${(def.yCol||'').replace(/_/g,' ')} by ${(def.xCol||'').replace(/_/g,' ')}`;
     const sub   = `${def.type} · score ${def.score} · ${def.tableName}`;
 
@@ -467,13 +555,13 @@ function renderAutoCharts(samples, containerId, maxCharts) {
   if (!count) container.innerHTML = '<div class="rel-map-empty">No chart-able data found in loaded tables.</div>';
 }
 
-// ── ECharts option builders (dark theme) ──────────────────────────────────────
-const DARK_COLORS = ['#58A6FF','#3FB950','#D29922','#F85149','#BC8CFF','#79C0FF'];
+// ── ECharts option builders (light theme — Fuchsian/Aquamarine palette) ───────
+const DARK_COLORS = ['#6F42C1','#007BFF','#00CCCC','#0DCAF0','#17A2B8','#6c757d'];
 
-const DARK_GRID  = { top:30, right:20, bottom:40, left:60 };
-const DARK_AXIS  = { axisLine:{lineStyle:{color:'#30363D'}}, splitLine:{lineStyle:{color:'#21262D'}}, axisLabel:{color:'#8B949E',fontSize:11} };
-const DARK_TIP   = { trigger:'axis', backgroundColor:'#161B22', borderColor:'#30363D', textStyle:{color:'#E6EDF3',fontSize:12} };
-const DARK_LEGEND= { textStyle:{color:'#8B949E'} };
+const DARK_GRID  = { top:16, right:16, bottom:48, left:16, containLabel:true };
+const DARK_AXIS  = { axisLine:{lineStyle:{color:'#E5E7EB'}}, splitLine:{lineStyle:{color:'#F3F4F6'}}, axisLabel:{color:'#6B7280',fontSize:11} };
+const DARK_TIP   = { trigger:'axis', backgroundColor:'#FFFFFF', borderColor:'#E5E7EB', textStyle:{color:'#111827',fontSize:12} };
+const DARK_LEGEND= { textStyle:{color:'#4B5563'} };
 
 function buildLineOption(xData, series) {
   return {
@@ -499,22 +587,22 @@ function buildBarOption(xData, yData) {
       type:'bar', data:yData,
       itemStyle:{borderRadius:[4,4,0,0], color: {
         type:'linear', x:0,y:0,x2:0,y2:1,
-        colorStops:[{offset:0,color:'#58A6FF'},{offset:1,color:'#1f6feb'}]
+        colorStops:[{offset:0,color:'#9d71d9'},{offset:1,color:'#6F42C1'}]
       }},
-      label:{ show: xData.length<=10, position:'top', color:'#8B949E', fontSize:10 }
+      label:{ show: xData.length<=10, position:'top', color:'#6B7280', fontSize:10 }
     }]
   };
 }
 
 function buildDonutOption(labels, values) {
   return {
-    tooltip: { trigger:'item', backgroundColor:'#161B22', borderColor:'#30363D', textStyle:{color:'#E6EDF3'} },
+    tooltip: { trigger:'item', backgroundColor:'#FFFFFF', borderColor:'#E5E7EB', textStyle:{color:'#111827'} },
     legend: { orient:'vertical', right:10, top:'center', ...DARK_LEGEND },
     series: [{
       type:'pie', radius:['40%','70%'], center:['40%','50%'],
       data: labels.map((l,i) => ({ name:l, value:values[i], itemStyle:{color:DARK_COLORS[i%DARK_COLORS.length]} })),
-      label:{ color:'#8B949E', fontSize:11 },
-      labelLine:{lineStyle:{color:'#30363D'}}
+      label:{ color:'#6B7280', fontSize:11 },
+      labelLine:{lineStyle:{color:'#E5E7EB'}}
     }]
   };
 }
@@ -527,7 +615,7 @@ function buildScatterOption(rows, xCol, yCol) {
     series: [{
       type:'scatter',
       data: rows.map(r => [+r[xCol]||0, +r[yCol]||0]),
-      itemStyle:{ color:'#58A6FF', opacity:0.6 },
+      itemStyle:{ color:'#007BFF', opacity:0.6 },
       symbolSize: 6
     }]
   };
@@ -539,6 +627,35 @@ function populateTableSelector(names) {
   if (!sel) return;
   sel.innerHTML = '<option value="">Select a table…</option>' +
     names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+}
+
+// Format cell value: handle dates, numbers, and special types
+function formatTableCell(value, colName) {
+  if (value === null || value === undefined || value === '') return '';
+
+  // Check if column is a date/time column
+  const isDateCol = /date|time|start|end|month|week|year|quarter/i.test(colName);
+
+  if (isDateCol) {
+    // Handle Excel serial dates (numbers like 46023)
+    if (typeof value === 'number' && value > 100 && value < 100000) {
+      const excelDate = new Date((value - 25569) * 86400 * 1000);
+      if (!isNaN(excelDate.getTime())) {
+        return excelDate.toISOString().split('T')[0];
+      }
+    }
+    // Handle ISO format dates (2026-01-01)
+    if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}/.test(value)) {
+      return value.split('T')[0];
+    }
+  }
+
+  // Format large numbers with commas
+  if (typeof value === 'number' && !isDateCol && Math.abs(value) >= 1000) {
+    return value.toLocaleString();
+  }
+
+  return String(value);
 }
 
 async function loadTableExplorer(tableName) {
@@ -558,31 +675,39 @@ async function loadTableExplorer(tableName) {
     const rows = data.rows || [];
     const meta = loadedTables[tableName] || {};
 
-    // Compute per-column min/max for numeric heat
-    const colStats = {};
-    cols.forEach(c => {
-      const vals = rows.map(r => +r[c.name]).filter(v => !isNaN(v));
-      if (vals.length) colStats[c.name] = { min: Math.min(...vals), max: Math.max(...vals) };
-    });
-
     const numTypes = ['INTEGER','BIGINT','DOUBLE','FLOAT','REAL'];
     const isNum    = c => numTypes.some(t => (c.type||'').toUpperCase().startsWith(t));
+    const isDate   = c => /date|time|start|end|month|week|year|quarter/i.test(c.name);
+
+    // Compute per-column min/max for numeric heat (skip dates)
+    const colStats = {};
+    cols.forEach(c => {
+      // Skip date columns — their min/max are Excel serial numbers (meaningless to display)
+      if (isDate(c)) return;
+
+      const vals = rows.map(r => +r[c.name]).filter(v => !isNaN(v));
+      if (vals.length && isNum(c)) {
+        colStats[c.name] = { min: Math.min(...vals), max: Math.max(...vals) };
+      }
+    });
 
     el.innerHTML = `
       <table class="db-data-table">
         <thead><tr>${cols.map(c => `<th title="${escapeHtml(c.type||'')}">
-          ${isNum(c)?'🔢':'🔤'} ${escapeHtml(c.name)}
+          ${isNum(c)?'🔢':isDate(c)?'📅':'🔤'} ${escapeHtml(c.name)}
           ${colStats[c.name] ? `<br><small style="font-weight:400;color:var(--text-muted)">${colStats[c.name].min.toFixed(1)}–${colStats[c.name].max.toFixed(1)}</small>` : ''}
         </th>`).join('')}</tr></thead>
         <tbody>${rows.map(r => `<tr>${cols.map(c => {
           const v = r[c.name];
           const s = colStats[c.name];
           let style = '';
-          if (s && !isNaN(+v)) {
+          // Only apply heatmap highlight for numeric (non-date) columns
+          if (s && !isNaN(+v) && !isDate(c)) {
             const pct = s.max === s.min ? 0.5 : (+v - s.min) / (s.max - s.min);
-            style = `background:rgba(88,166,255,${(pct*0.3).toFixed(2)})`;
+            style = `background:rgba(111,66,193,${(pct*0.18).toFixed(2)})`;
           }
-          return `<td style="${style}" title="${escapeHtml(String(v??''))}">${escapeHtml(String(v??''))}</td>`;
+          const displayVal = formatTableCell(v, c.name);
+          return `<td style="${style}" title="${escapeHtml(displayVal)}">${escapeHtml(displayVal)}</td>`;
         }).join('')}</tr>`).join('')}</tbody>
       </table>
       <div class="table-row-count">Showing ${rows.length} of ${(meta.rowCount||0).toLocaleString()} rows · ${cols.length} columns</div>`;
