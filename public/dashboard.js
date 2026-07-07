@@ -3,6 +3,7 @@
 const API = '';
 let loadedTables    = {};
 let allCharts       = [];    // echarts instances for resize
+let chartRegistry   = {};    // chartId -> echarts instance
 let pendingCharts   = [];    // {id, option} waiting for their section to become visible
 let sidebarOpen     = true;
 
@@ -122,8 +123,42 @@ function tryInitChart(id, option) {
   const chart = echarts.init(el);
   chart.setOption({ ..._normalizeOption(option), backgroundColor: 'transparent' });
   allCharts.push(chart);
+  chartRegistry[id] = chart;
   el._chartInited = true;
   return true;
+}
+
+function exportChartImage(chartId, title) {
+  const el = document.getElementById(chartId);
+  if (!el || typeof echarts === 'undefined') {
+    alert('Chart is not available for export yet.');
+    return;
+  }
+
+  const chart = chartRegistry[chartId] || echarts.getInstanceByDom(el);
+  if (!chart) {
+    alert('Chart is still loading. Open this section and try again.');
+    return;
+  }
+
+  try {
+    const dataUrl = chart.getDataURL({
+      type: 'png',
+      pixelRatio: 2,
+      backgroundColor: '#FFFFFF'
+    });
+    const safe = String(title || 'chart')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 64) || 'chart';
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = `${safe}.png`;
+    a.click();
+  } catch (_) {
+    alert('Could not export this chart image.');
+  }
 }
 
 function shortFallbackSummary(meta = {}, option = {}) {
@@ -281,14 +316,23 @@ async function fillChartSummary(summaryId, meta, option) {
 
 function buildChartCard({ container, chartId, title, sub, option, summaryMeta, delayIndex }) {
   const summaryId = `${chartId}_summary`;
+  const exportId = `${chartId}_export`;
   const card = document.createElement('div');
   card.className = 'db-chart-card';
   card.innerHTML = `
-    <div class="db-chart-card-title">${escapeHtml(title)}</div>
+    <div class="db-chart-card-head">
+      <div class="db-chart-card-title">${escapeHtml(title)}</div>
+      <button class="db-chart-export-btn" id="${exportId}" type="button">Export Image</button>
+    </div>
     <div class="db-chart-card-sub">${escapeHtml(sub)}</div>
     <div class="db-chart-inner" id="${chartId}"></div>
     <div class="db-chart-summary" id="${summaryId}">Summarizing...</div>`;
   container.appendChild(card);
+
+  const exportBtn = document.getElementById(exportId);
+  if (exportBtn) {
+    exportBtn.addEventListener('click', () => exportChartImage(chartId, title));
+  }
 
   const cid = chartId;
   const opt = option;
@@ -317,6 +361,7 @@ async function loadDashboard() {
   // Dispose old chart instances to avoid memory leaks on refresh
   allCharts.forEach(c => { try { c.dispose(); } catch (_) {} });
   allCharts   = [];
+  chartRegistry = {};
   pendingCharts = [];
 
   try {
