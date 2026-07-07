@@ -42,6 +42,14 @@ function _normalizeOption(option) {
   // Deep-clone to avoid mutating the source
   const opt = JSON.parse(JSON.stringify(option));
 
+  const formatTwoDecimals = value => {
+    if (value === null || value === undefined || value === '') return '';
+    if (typeof value === 'number') return Number.isFinite(value) ? value.toFixed(2) : String(value);
+    const n = Number(value);
+    if (Number.isFinite(n) && String(value).trim() !== '') return n.toFixed(2);
+    return String(value);
+  };
+
   // Strip built-in title/subtext — the card HTML header already shows them
   delete opt.title;
 
@@ -54,16 +62,22 @@ function _normalizeOption(option) {
     ax.axisLine  = lightLine;
     ax.splitLine = lightSplit;
     ax.axisLabel = { ...lightLabel, ...(ax.axisLabel || {}), color: '#6B7280' };
+    if ((ax.type === 'value' || ax.type === 'log') && !ax.axisLabel.formatter) {
+      ax.axisLabel.formatter = v => formatTwoDecimals(v);
+    }
     return ax;
   };
-  if (opt.xAxis) opt.xAxis = applyAxis(opt.xAxis);
-  if (opt.yAxis) opt.yAxis = applyAxis(opt.yAxis);
+  if (opt.xAxis) opt.xAxis = Array.isArray(opt.xAxis) ? opt.xAxis.map(applyAxis) : applyAxis(opt.xAxis);
+  if (opt.yAxis) opt.yAxis = Array.isArray(opt.yAxis) ? opt.yAxis.map(applyAxis) : applyAxis(opt.yAxis);
 
   // Light tooltip
   if (opt.tooltip) {
     opt.tooltip.backgroundColor = '#FFFFFF';
     opt.tooltip.borderColor     = '#E5E7EB';
     opt.tooltip.textStyle       = { color: '#111827', fontSize: 12 };
+    if (!opt.tooltip.valueFormatter) {
+      opt.tooltip.valueFormatter = value => formatTwoDecimals(value);
+    }
   }
 
   // Light legend
@@ -109,6 +123,19 @@ function _normalizeOption(option) {
     }
     // Fix axis labels
     if (s.label?.color === '#8B949E') s.label.color = '#6B7280';
+
+    // Standardize visible numeric data labels to 2 decimals
+    if (s.label?.show && !s.label.formatter) {
+      s.label.formatter = params => {
+        const val = params?.value;
+        if (Array.isArray(val)) {
+          const last = val[val.length - 1];
+          return formatTwoDecimals(last);
+        }
+        if (val && typeof val === 'object' && val.value !== undefined) return formatTwoDecimals(val.value);
+        return formatTwoDecimals(val);
+      };
+    }
   });
 
   return opt;
@@ -887,7 +914,13 @@ function buildBarOption(xData, yData) {
         type:'linear', x:0,y:0,x2:0,y2:1,
         colorStops:[{offset:0,color:'#9d71d9'},{offset:1,color:'#6F42C1'}]
       }},
-      label:{ show: xData.length<=10, position:'top', color:'#6B7280', fontSize:10 }
+      label:{
+        show: xData.length<=10,
+        position:'top',
+        color:'#6B7280',
+        fontSize:10,
+        formatter: p => (Number.isFinite(+p.value) ? (+p.value).toFixed(2) : p.value)
+      }
     }]
   };
 }
