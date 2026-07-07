@@ -193,8 +193,69 @@ function normalizeExecutiveSummary(text, sections) {
   return [kf, bi, nb].join('\n');
 }
 
+const WORKFLOW_BLUEPRINT = {
+  ingestion: {
+    step: 1,
+    name: 'Connect Business Data',
+    capabilities: ['upload_csv_excel', 'connect_database', 'connect_data_warehouse', 'connect_cloud_storage']
+  },
+  discovery: {
+    step: 2,
+    name: 'Data Discovery & Understanding',
+    capabilities: ['read_schema', 'detect_tables', 'detect_relationships', 'detect_data_types', 'identify_measures', 'identify_dimensions', 'build_metadata', 'create_semantic_model']
+  },
+  exploration: {
+    step: 3,
+    name: 'AI Business Data Exploration',
+    capabilities: ['business_kpis', 'revenue', 'profit', 'sales', 'customer_behavior', 'product_performance', 'regional_performance', 'time_trends', 'seasonal_patterns', 'anomalies', 'risks', 'opportunities']
+  },
+  dashboard: {
+    step: 4,
+    name: 'Automatic Dashboard Generation',
+    capabilities: ['executive_dashboard', 'kpi_cards', 'revenue_dashboard', 'sales_dashboard', 'profit_dashboard', 'customer_dashboard', 'product_dashboard', 'regional_dashboard', 'forecast_dashboard', 'auto_visualization_selection']
+  },
+  storytelling: {
+    step: 5,
+    name: 'AI Executive Insights & Storytelling',
+    capabilities: ['executive_summary', 'key_findings', 'major_trends', 'business_risks', 'growth_opportunities', 'recommended_actions']
+  },
+  interaction: {
+    step: 6,
+    name: 'User Asks Business Question'
+  },
+  intent: {
+    step: 7,
+    name: 'Intent Understanding',
+    capabilities: ['business_goal', 'kpi', 'required_data', 'filters', 'time_period', 'comparison', 'conversation_context']
+  },
+  analytics: {
+    step: 8,
+    name: 'Analytics Engine',
+    capabilities: ['data_processing', 'business_calculations', 'kpi_computation', 'trend_analysis', 'correlation_analysis', 'forecasting', 'root_cause_analysis']
+  },
+  contextualStorytelling: {
+    step: 9,
+    name: 'Context-Aware Data Storytelling',
+    capabilities: ['direct_answer', 'what_happened', 'why_happened', 'supporting_evidence', 'business_impact', 'recommendation']
+  },
+  followup: {
+    step: 10,
+    name: 'Conversational Follow-up'
+  },
+  decisionSupport: {
+    step: 11,
+    name: 'Decision Support',
+    capabilities: ['business_actions', 'risk_mitigation', 'opportunity_identification', 'kpi_monitoring', 'strategic_recommendations']
+  }
+};
+
 // ── /api/ping ─────────────────────────────────────────────────────────────────
 app.get('/api/ping', (req, res) => res.json({ status: 'ok', version: 'v2' }));
+
+// ── /api/workflow-blueprint ───────────────────────────────────────────────────
+app.get('/api/workflow-blueprint', (req, res) => {
+  res.json({ workflow: WORKFLOW_BLUEPRINT });
+});
 
 // ════════════════════════════════════════════════════════════════════════════════
 // TABLE MANAGEMENT
@@ -442,6 +503,13 @@ const DECODE_INTENT_SYSTEM = `You are an analytical intent decoder for a multi-t
 Your ONLY job is to decode exactly what calculation or lookup the user wants.
 Given a user question and the data schema, return a JSON object with EXACTLY these fields:
 {
+  "business_goal": "short phrase describing the business objective",
+  "kpi": "name of KPI implied by the question, or null",
+  "required_data": ["specific entities/columns needed to answer"],
+  "filters": ["normalized filter conditions inferred from question/context"],
+  "time_period": "explicit period inferred from question/context, or all_time",
+  "comparison": "comparison pair if requested (e.g. Q1 vs Q2), else null",
+  "conversation_context_used": "brief note describing how prior turns influenced interpretation",
   "intent_type": "aggregation|ranking|comparison|trend|lookup|ratio|conditional|visualization",
   "what_to_calculate": "one precise sentence describing what number/list/comparison to produce",
   "primary_metric": "exact column name from schema, or null",
@@ -461,6 +529,8 @@ Given a user question and the data schema, return a JSON object with EXACTLY the
 }
 RULES:
 - CRITICAL: ALWAYS set needs_clarification=false and clarification_prompt=null. NEVER ask the user for more info. Make the best reasonable assumption and state it in decoded_restatement.
+- Always fill business_goal, required_data, filters, and time_period using best-effort assumptions when the question is underspecified.
+- conversation_context_used must summarize what was carried over from prior turns.
 - For vague chart/visualization requests → intent_type='visualization', choose the most meaningful metric from available columns.
 - 'Consistent', 'stable', 'most reliable' → aggregation_fn='STDEV'; most consistent = lowest STDEV.
 - 'Unusual', 'anomaly', 'spike', 'outlier' → intent_type='conditional', what_to_calculate must mention IQR.

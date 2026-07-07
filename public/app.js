@@ -3,16 +3,17 @@
 const API = '';
 
 const STEPS = [
-  { id: 'home', title: 'Home', desc: 'Welcome to your AI-guided analytics workspace.' },
-  { id: 'connect-data', title: 'Connect Data', desc: 'Choose where your business data is stored.' },
-  { id: 'configure-connection', title: 'Configure Connection', desc: 'Provide connection details and load data safely.' },
-  { id: 'validate', title: 'Validate', desc: 'Confirm data is readable, complete, and ready.' },
-  { id: 'profile-data', title: 'Profile Data', desc: 'Understand shape, types, and structure of your dataset.' },
-  { id: 'data-quality', title: 'Data Quality', desc: 'Assess health using completeness and consistency metrics.' },
-  { id: 'cleaning', title: 'Cleaning', desc: 'Apply AI-assisted improvements to boost trust in data.' },
-  { id: 'semantic-layer', title: 'Semantic Layer', desc: 'Map entities, measures, dimensions, and relationships.' },
-  { id: 'ready', title: 'Ready', desc: 'Review readiness before conversational analysis.' },
-  { id: 'ask-questions', title: 'Ask Questions', desc: 'Ask business questions and receive AI answers.' }
+  { id: 'connect-business-data', title: '1. Connect Business Data', desc: 'Upload CSV/Excel, connect database, warehouse, or cloud storage.' },
+  { id: 'data-discovery-understanding', title: '2. Data Discovery & Understanding', desc: 'AI reads schema, tables, relationships, data types, metadata, and semantic model.' },
+  { id: 'ai-business-data-exploration', title: '3. AI Business Data Exploration', desc: 'AI explores KPI, revenue, profit, sales, customers, products, regions, trends, anomalies, risks, and opportunities.' },
+  { id: 'automatic-dashboard-generation', title: '4. Automatic Dashboard Generation', desc: 'AI creates executive and domain dashboards with best-fit visualizations.' },
+  { id: 'ai-executive-insights-storytelling', title: '5. AI Executive Insights & Storytelling', desc: 'AI explains findings, trends, risks, opportunities, and actions.' },
+  { id: 'user-asks-business-question', title: '6. User Asks Business Question', desc: 'Ask business questions in natural language.' },
+  { id: 'intent-understanding', title: '7. Intent Understanding', desc: 'AI identifies business goal, KPI, data needs, filters, period, comparison, and context.' },
+  { id: 'analytics-engine', title: '8. Analytics Engine', desc: 'AI performs KPI computation, trend/correlation analysis, forecasting, and root-cause analytics.' },
+  { id: 'context-aware-storytelling', title: '9. Context-Aware Data Storytelling', desc: 'Every answer includes direct answer, what happened, why, evidence, impact, and recommendation.' },
+  { id: 'conversational-follow-up', title: '10. Conversational Follow-up', desc: 'Continue drill-downs, comparisons, filters, forecasts, and dashboard refresh as needed.' },
+  { id: 'decision-support', title: '11. Decision Support', desc: 'AI recommends strategic actions, risk mitigation, opportunities, and KPI monitoring.' }
 ];
 
 const state = {
@@ -759,16 +760,96 @@ function escapeHtml(str) {
 
 async function renderCenterByStep() {
   const stepId = STEPS[state.current].id;
-  if (stepId === 'home') return renderHome();
-  if (stepId === 'connect-data') return renderConnectData();
-  if (stepId === 'configure-connection') return renderConfigureConnection();
-  if (stepId === 'validate') return renderValidate();
-  if (stepId === 'profile-data') return renderProfileData();
-  if (stepId === 'data-quality') return renderDataQuality();
-  if (stepId === 'cleaning') return renderCleaning();
-  if (stepId === 'semantic-layer') return renderSemanticLayer();
-  if (stepId === 'ready') return renderReady();
-  if (stepId === 'ask-questions') return renderAskQuestions();
+  if (stepId === 'connect-business-data') return renderConnectData();
+  if (stepId === 'data-discovery-understanding') return renderDiscoveryUnderstanding();
+  if (stepId === 'ai-business-data-exploration') return renderBusinessExploration();
+  if (stepId === 'automatic-dashboard-generation') return renderAutoDashboardGeneration();
+  if (stepId === 'ai-executive-insights-storytelling') return renderExecutiveStorytelling();
+  if (stepId === 'user-asks-business-question') return renderAskQuestions();
+  if (stepId === 'intent-understanding') return renderWorkflowInfoCard('Intent Understanding', [
+    'Business Goal extracted automatically',
+    'KPI and required data identified',
+    'Filters, time period, and comparison inferred',
+    'Conversation context retained for follow-up questions'
+  ]);
+  if (stepId === 'analytics-engine') return renderWorkflowInfoCard('Analytics Engine', [
+    'Required data processing is executed in DuckDB',
+    'Business calculations and KPI computation run automatically',
+    'Trend/correlation and forecasting logic are applied when relevant',
+    'Root-cause paths are analyzed when question asks "why"'
+  ]);
+  if (stepId === 'context-aware-storytelling') return renderWorkflowInfoCard('Context-Aware Data Storytelling', [
+    '1) Direct Answer',
+    '2) What happened?',
+    '3) Why did it happen?',
+    '4) Supporting Evidence',
+    '5) Business Impact',
+    '6) Recommendation'
+  ]);
+  if (stepId === 'conversational-follow-up') return renderWorkflowInfoCard('Conversational Follow-up', [
+    'Explain further',
+    'Compare another period',
+    'Filter by region/category',
+    'Forecast next six months',
+    'Drill down and continue conversation context'
+  ]);
+  if (stepId === 'decision-support') return renderWorkflowInfoCard('Decision Support', [
+    'Business actions prioritized by impact',
+    'Risk mitigation recommendations',
+    'Opportunity identification',
+    'KPI monitoring guidance',
+    'Strategic recommendations'
+  ]);
+}
+
+async function renderDiscoveryUnderstanding() {
+  if (emptyStateIfNoTable()) return;
+  await renderSemanticLayer();
+  markCompleted(state.current);
+}
+
+function renderBusinessExploration() {
+  const tables = Object.values(state.dataset.tables || {});
+  const cols = tables.flatMap(t => t.columns || []);
+  const matched = cols.filter(c => /revenue|profit|sales|customer|product|region|date|month|quarter|year|cost|margin|churn/i.test(c.name || ''));
+  el.stepContent.innerHTML =
+    '<div class="card"><h3>AI Exploration Coverage</h3>' +
+      '<p>The engine is configured to automatically analyze KPI, revenue, profit, sales, customer behavior, product performance, regional patterns, time trends, anomalies, risks, and opportunities.</p>' +
+      '<p><strong>Detected business-relevant fields:</strong> ' + (matched.length ? matched.slice(0, 25).map(c => escapeHtml(c.name)).join(', ') : 'No obvious business KPI fields detected yet.') + '</p>' +
+      '<button class="primary-btn" id="goDashboardBtn">Open Auto Dashboard</button>' +
+    '</div>';
+  document.getElementById('goDashboardBtn').addEventListener('click', () => window.open('/dashboard', '_blank'));
+  markCompleted(state.current);
+}
+
+function renderAutoDashboardGeneration() {
+  el.stepContent.innerHTML =
+    '<div class="card"><h3>Automatic Dashboard Generation</h3>' +
+      '<p>ConvBI auto-generates executive dashboards, KPI cards, and domain dashboards (revenue, sales, profit, customer, product, regional, forecast) with best-fit visualizations.</p>' +
+      '<button class="primary-btn" id="openAutoDashBtn">Open Generated Dashboard</button>' +
+    '</div>';
+  document.getElementById('openAutoDashBtn').addEventListener('click', () => window.open('/dashboard', '_blank'));
+  markCompleted(state.current);
+}
+
+async function renderExecutiveStorytelling() {
+  if (emptyStateIfNoTable()) return;
+  el.stepContent.innerHTML =
+    '<div class="card"><h3>AI Executive Insights & Storytelling</h3>' +
+      '<p>Every generated insight includes executive summary, key findings, trends, risks, opportunities, and recommended actions.</p>' +
+      '<p><em>Your dashboard is ready for exploration.</em></p>' +
+      '<button class="secondary-btn" id="openStoryDashBtn">View Dashboard Story</button>' +
+    '</div>';
+  document.getElementById('openStoryDashBtn').addEventListener('click', () => window.open('/dashboard', '_blank'));
+  markCompleted(state.current);
+}
+
+function renderWorkflowInfoCard(title, lines) {
+  el.stepContent.innerHTML =
+    '<div class="card"><h3>' + escapeHtml(title) + '</h3><ul>' +
+    lines.map(l => '<li>' + escapeHtml(l) + '</li>').join('') +
+    '</ul></div>';
+  markCompleted(state.current);
 }
 
 async function renderAll() {

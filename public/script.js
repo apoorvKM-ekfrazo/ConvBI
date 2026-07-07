@@ -10,6 +10,15 @@ let savedInsights  = JSON.parse(localStorage.getItem('convbi_insights') || '[]')
 let conversationTurns = []; // recent Q/A context for intent decoding
 const answerPayloadStore = {}; // cardId -> payload for exports
 
+const WORKFLOW_LABELS = {
+  6: 'User Asks Business Question',
+  7: 'Intent Understanding',
+  8: 'Analytics Engine',
+  9: 'Context-Aware Data Storytelling',
+  10: 'Conversational Follow-up',
+  11: 'Decision Support'
+};
+
 // Databricks browser state (legacy compat)
 let dbBrowserState = { catalog: null, schema: null, table: null };
 
@@ -42,6 +51,57 @@ function showSuccess(msg) { const el = document.getElementById('successBox'); if
 
 function escapeHtml(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function setWorkflowRuntime(step, detail) {
+  const box = document.getElementById('workflowRuntime');
+  if (!box) return;
+  const title = WORKFLOW_LABELS[step] || 'Workflow';
+  const suffix = detail ? ` ${escapeHtml(detail)}` : '';
+  box.innerHTML = `<strong>Step ${step}: ${escapeHtml(title)}</strong>${suffix}`;
+}
+
+function buildFollowupSuggestions(question, decoded) {
+  const q = String(question || '').toLowerCase();
+  const suggestions = [
+    'Explain further',
+    'Compare another period',
+    'Filter by Region',
+    'Show only Electronics',
+    'Forecast next six months',
+    'Drill down into customers',
+    'Refresh Dashboard'
+  ];
+
+  if (decoded?.time_period && decoded.time_period !== 'all_time') {
+    suggestions.unshift('Compare with previous period');
+  }
+  if (/forecast|next quarter|next month|next six|prediction/.test(q)) {
+    suggestions.unshift('Show forecast confidence range');
+  }
+  return Array.from(new Set(suggestions)).slice(0, 8);
+}
+
+function renderFollowupRail(question, decoded) {
+  const rail = document.getElementById('followupRail');
+  if (!rail) return;
+  const prompts = buildFollowupSuggestions(question, decoded);
+  rail.style.display = '';
+  rail.innerHTML = `
+    <div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--t3);margin-bottom:8px">Step 10: Conversational Follow-up</div>
+    <div style="display:flex;gap:7px;flex-wrap:wrap">${prompts.map(p => `<button class="chip" onclick="runFollowupPrompt('${escapeHtml(p)}')">${escapeHtml(p)}</button>`).join('')}</div>`;
+}
+
+function runFollowupPrompt(prompt) {
+  if (prompt === 'Refresh Dashboard') {
+    localStorage.setItem('convbi_tables_updated', Date.now().toString());
+    window.open('/dashboard', '_blank');
+    return;
+  }
+  const input = document.getElementById('qaInput');
+  if (!input) return;
+  input.value = prompt;
+  input.focus();
 }
 
 // ── Template download ─────────────────────────────────────────────────────────
@@ -368,6 +428,7 @@ async function askQuestion() {
 
   appendUserMessage(q);
   const thinkingId = appendThinking();
+  setWorkflowRuntime(6, 'Question captured and queued for analysis.');
 
   try {
     // 1. Build schemas & relationships
@@ -386,6 +447,9 @@ async function askQuestion() {
       const c = cacheRes.cached;
       const sections = parseInterpretSections(c.answer || '');
       renderAnswerCard(q, sections, c.sql || '', c.decoded || null, { rows: c.rows || [], columns: c.columns || [] }, allTableSchemas, true);
+      setWorkflowRuntime(9, 'Context-aware storytelling restored from cache.');
+      renderFollowupRail(q, c.decoded || {});
+      setWorkflowRuntime(11, 'Decision support reused from cached analytical result.');
       if (voiceMgr?.speakText && c.answer) voiceMgr.speakText(sections.directAnswer || sections.summary || '');
       saveToHistory(q, sections.directAnswer || sections.summary || '', c.sql || '');
       conversationTurns.push({ question: q, directAnswer: sections.directAnswer || sections.summary || '' });
@@ -401,7 +465,8 @@ async function askQuestion() {
     const semanticRules = buildSemanticRulesFromSchemas(allTableSchemas);
 
     // 2. Decode intent
-    updateThinking(thinkingId, 'Decoding intent…');
+    setWorkflowRuntime(7, 'Extracting business goal, KPI, filters, period, and context.');
+    updateThinking(thinkingId, 'Step 7/11 · Intent understanding…');
     const intRes  = await fetch(`${API}/api/decode-intent`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
@@ -422,7 +487,8 @@ async function askQuestion() {
     }
 
     // 3. Generate SQL
-    updateThinking(thinkingId, 'Generating SQL…');
+    setWorkflowRuntime(8, 'Generating analytics plan and SQL computation path.');
+    updateThinking(thinkingId, 'Step 8/11 · Building analytics query…');
     let sql = null, sqlError = null;
 
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -439,7 +505,7 @@ async function askQuestion() {
       if (!sql) { sqlError = genData.error || 'No SQL generated'; continue; }
 
       // 4. Execute SQL
-      updateThinking(thinkingId, 'Executing query…');
+      updateThinking(thinkingId, 'Step 8/11 · Executing analytics engine…');
       const execRes  = await fetch(`${API}/api/execute-sql`, {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ sql })
@@ -449,7 +515,8 @@ async function askQuestion() {
       if (execData.error) { sqlError = execData.error; continue; }
 
       // 5. Narrate
-      updateThinking(thinkingId, 'Writing analysis…');
+      setWorkflowRuntime(9, 'Preparing 6-part context-aware business storytelling.');
+      updateThinking(thinkingId, 'Step 9/11 · Writing business narrative…');
       const allRows = execData.rows || [];
       // Cap rows sent to LLM to avoid token overuse — 30 rows is enough to narrate
       const resultForLLM = allRows.length === 1 ? allRows[0] : allRows.slice(0, 30);
@@ -484,6 +551,9 @@ async function askQuestion() {
       }
       const sections = parseInterpretSections(answerText);
       renderAnswerCard(q, sections, sql, decoded, execData, allTableSchemas);
+      setWorkflowRuntime(10, 'Follow-up prompts are ready for deeper exploration.');
+      renderFollowupRail(q, decoded || {});
+      setWorkflowRuntime(11, 'Decision support generated with recommendations and impacts.');
 
       // Save to history
       saveToHistory(q, sections.directAnswer || sections.summary || '', sql);
@@ -511,6 +581,7 @@ async function askQuestion() {
 
   } catch (e) {
     removeThinking(thinkingId);
+    setWorkflowRuntime(6, 'Pipeline failed. Review error and retry question.');
     appendErrorMessage('Error: ' + e.message);
   } finally {
     isAsking = false;
@@ -672,6 +743,7 @@ function renderAnswerCard(question, sections, sql, decoded, execData, schemas, f
         <button class="action-btn" onclick="exportAnswerReport('${cardId}')">Export Report</button>
         <button class="action-btn" onclick="generateExecutiveSummary('${cardId}')">Executive Summary</button>
       </div>
+      <div class="answer-insight" style="margin-top:10px"><strong>Decision Support:</strong> Prioritize recommended actions by business impact, then monitor KPI trend and risk weekly.</div>
     </div>`;
 
   msgs.appendChild(div);
@@ -1162,6 +1234,7 @@ function updateVoiceSpeed(v)  {
 // ── Init ──────────────────────────────────────────────────────────────────────
 (async () => {
   await refreshTableLibrary();
+  setWorkflowRuntime(6, 'Ready for your business question.');
   // Load query history
   try { queryHistory = JSON.parse(localStorage.getItem('convbi_history')||'[]'); } catch (_) {}
   // Set up voice manager if available

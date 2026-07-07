@@ -6,6 +6,14 @@ let allCharts       = [];    // echarts instances for resize
 let pendingCharts   = [];    // {id, option} waiting for their section to become visible
 let sidebarOpen     = true;
 
+let workflowState = {
+  step1: false,
+  step2: false,
+  step3: false,
+  step4: false,
+  step5: false
+};
+
 // ── Section navigation ────────────────────────────────────────────────────────
 function showSection(name) {
   document.querySelectorAll('.db-section').forEach(s => s.classList.remove('active'));
@@ -145,10 +153,15 @@ async function loadDashboard() {
   } catch (_) { loadedTables = {}; }
 
   const names = Object.keys(loadedTables);
+  workflowState.step1 = names.length > 0;
   renderSidebarSources(names);
   populateTableSelector(names);
 
-  if (!names.length) return;
+  if (!names.length) {
+    workflowState = { step1: false, step2: false, step3: false, step4: false, step5: false };
+    renderWorkflowCoverage();
+    return;
+  }
 
   // Parallel: pull sample rows + detect relationships
   const [samples, relData] = await Promise.all([
@@ -156,10 +169,17 @@ async function loadDashboard() {
     fetch(`${API}/api/detect-relationships`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }).then(r => r.ok ? r.json() : { joins: [], noRelation: [] }).catch(() => ({ joins: [], noRelation: [] }))
   ]);
 
+  workflowState.step2 = Object.values(loadedTables).some(t => Array.isArray(t.columns) && t.columns.length > 0);
+  workflowState.step3 = hasBusinessSignals(samples);
+
   renderKPIStrip(samples);
   renderRelationshipMap(names, relData);
-  renderSmartCharts(names, 'overviewCharts', 2, samples);
-  renderSmartCharts(names, 'chartsSection',  6, samples);
+  const [overviewCount, chartCount] = await Promise.all([
+    renderSmartCharts(names, 'overviewCharts', 2, samples),
+    renderSmartCharts(names, 'chartsSection', 6, samples)
+  ]);
+  workflowState.step4 = (overviewCount + chartCount) > 0;
+  renderWorkflowCoverage();
   renderHistory();
   renderInsights();
 
@@ -303,9 +323,54 @@ async function generateDataStory(samples, names) {
 
     const totalRows = Object.values(tableSchemas).reduce((s,t) => s + (t.rowCount||0), 0);
     storyAt.textContent = `Analysis of ${names.join(', ')} · ${totalRows.toLocaleString()} records`;
+    workflowState.step5 = true;
+    renderWorkflowCoverage();
   } catch (e) {
     storyH.textContent = 'Could not generate story: ' + e.message;
+    workflowState.step5 = false;
+    renderWorkflowCoverage();
   }
+}
+
+function hasBusinessSignals(samples) {
+  for (const d of Object.values(samples || {})) {
+    const cols = d.columns || [];
+    if (cols.some(c => /revenue|profit|sales|customer|product|region|date|month|quarter|year|cost|margin|churn/i.test(c.name || ''))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function renderWorkflowCoverage() {
+  const el = document.getElementById('workflowStages');
+  const badge = document.getElementById('workflowCoverageBadge');
+  if (!el || !badge) return;
+
+  const steps = [
+    { id: 1, title: '1. Connect Business Data', on: workflowState.step1, note: workflowState.step1 ? 'Data source connected.' : 'Awaiting file/database/warehouse/cloud source.' },
+    { id: 2, title: '2. Data Discovery & Understanding', on: workflowState.step2, note: workflowState.step2 ? 'Schema, types, and relationships detected.' : 'Waiting for schema and metadata.' },
+    { id: 3, title: '3. AI Business Data Exploration', on: workflowState.step3, note: workflowState.step3 ? 'Business KPI signals identified.' : 'No clear KPI signals detected yet.' },
+    { id: 4, title: '4. Automatic Dashboard Generation', on: workflowState.step4, note: workflowState.step4 ? 'Smart charts generated automatically.' : 'No chartable analytics generated yet.' },
+    { id: 5, title: '5. AI Executive Insights & Storytelling', on: workflowState.step5, note: workflowState.step5 ? 'Executive story generated.' : 'Story generation pending.' },
+    { id: 6, title: '6. User Asks Business Question', on: true, note: 'Question intake is available in Ask Questions.' },
+    { id: 7, title: '7. Intent Understanding', on: true, note: 'Intent decoder uses KPI, filters, time, and context.' },
+    { id: 8, title: '8. Analytics Engine', on: true, note: 'SQL + KPI/trend/comparison computation is active.' },
+    { id: 9, title: '9. Context-Aware Data Storytelling', on: true, note: 'Responses include 6 structured business sections.' },
+    { id: 10, title: '10. Conversational Follow-up', on: true, note: 'Follow-up prompts and contextual continuity enabled.' },
+    { id: 11, title: '11. Decision Support', on: true, note: 'Recommended actions and risk/opportunity guidance included.' }
+  ];
+
+  const done = steps.filter(s => s.on).length;
+  badge.textContent = `${done}/11 stages active`;
+  el.innerHTML = steps.map(s => `
+    <div class="workflow-stage ${s.on ? 'on' : 'off'}">
+      <span class="workflow-dot"></span>
+      <div>
+        <div class="workflow-step-title">${escapeHtml(s.title)}</div>
+        <div class="workflow-step-note">${escapeHtml(s.note)}</div>
+      </div>
+    </div>`).join('');
 }
 
 // ── Relationship map (SVG) ────────────────────────────────────────────────────
@@ -418,11 +483,13 @@ async function renderSmartCharts(tableNames, containerId, maxCharts, samplesForF
 
   if (!count) {
     // Fallback path: build deterministic charts from sampled rows if smart scoring yields none.
-    renderAutoCharts(samplesForFallback, containerId, maxCharts);
+    count = renderAutoCharts(samplesForFallback, containerId, maxCharts);
     if (!container.children.length) {
       container.innerHTML = '<div class="rel-map-empty">No chart-able data found in loaded tables.</div>';
     }
   }
+
+  return count;
 }
 
 // ── Auto-chart gallery ────────────────────────────────────────────────────────
@@ -557,6 +624,7 @@ function renderAutoCharts(samples, containerId, maxCharts) {
   }
 
   if (!count) container.innerHTML = '<div class="rel-map-empty">No chart-able data found in loaded tables.</div>';
+  return count;
 }
 
 // ── ECharts option builders (light theme — Fuchsian/Aquamarine palette) ───────
