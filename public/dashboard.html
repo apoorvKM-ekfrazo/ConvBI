@@ -30,7 +30,7 @@
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="2" width="14" height="12" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M1 6h14M5 6v8M10 6v8" stroke="currentColor" stroke-width="1.2"/></svg>
         <span>Data Tables</span>
       </a>
-      <a class="db-nav-item" href="/" onclick="window.location.href='/'">
+      <a class="db-nav-item" href="/?tab=qa" onclick="window.location.href='/?tab=qa'">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M7 3H3a1 1 0 00-1 1v9a1 1 0 001 1h9a1 1 0 001-1V9M10 2h4v4M7 9l7-7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
         <span>Ask Questions</span>
       </a>
@@ -69,15 +69,6 @@
         <div class="kpi-empty">Load data to see KPIs</div>
       </div>
 
-      <!-- Workflow status -->
-      <div class="db-card" id="workflowCard">
-        <div class="db-card-header">
-          <span class="db-card-title">Workflow Coverage (Steps 1-11)</span>
-          <span class="db-badge-info" id="workflowCoverageBadge">Waiting for data</span>
-        </div>
-        <div id="workflowStages" class="workflow-stages"></div>
-      </div>
-
       <!-- Data story -->
       <div class="db-card story-card" id="storyCard">
         <div class="db-card-header">
@@ -88,17 +79,6 @@
         <div id="storyNarrative" class="story-narrative"></div>
         <div id="storyAlerts" class="story-alerts"></div>
         <div id="storyAttrib" class="story-attrib"></div>
-      </div>
-
-      <!-- Relationship map -->
-      <div class="db-card" id="relMapCard">
-        <div class="db-card-header">
-          <span class="db-card-title">Table Relationships</span>
-          <span class="db-badge-info" id="relMapBadge"></span>
-        </div>
-        <div id="relMap" class="rel-map-wrap">
-          <div class="rel-map-empty">No tables loaded</div>
-        </div>
       </div>
 
       <!-- Auto charts (overview 2-column) -->

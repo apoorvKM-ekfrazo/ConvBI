@@ -35,6 +35,20 @@ function switchTab(name) {
   if (name === 'qa') refreshTableContextBar();
 }
 
+function getInitialTabFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search || '');
+    const tabParam = (params.get('tab') || '').toLowerCase();
+    if (tabParam === 'qa' || tabParam === 'ask' || tabParam === 'ask-questions') return 'qa';
+    if (tabParam === 'input') return 'input';
+
+    const hash = (window.location.hash || '').replace('#', '').toLowerCase();
+    if (hash === 'qa' || hash === 'ask' || hash === 'ask-questions') return 'qa';
+    if (hash === 'input') return 'input';
+  } catch (_) {}
+  return 'input';
+}
+
 function switchSourceTab(name) {
   document.querySelectorAll('.src-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.getElementById('filesPanel').style.display     = name === 'files'      ? '' : 'none';
@@ -1234,6 +1248,7 @@ function updateVoiceSpeed(v)  {
 // ── Init ──────────────────────────────────────────────────────────────────────
 (async () => {
   await refreshTableLibrary();
+  switchTab(getInitialTabFromUrl());
   setWorkflowRuntime(6, 'Ready for your business question.');
   // Load query history
   try { queryHistory = JSON.parse(localStorage.getItem('convbi_history')||'[]'); } catch (_) {}
