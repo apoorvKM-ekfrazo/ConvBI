@@ -356,7 +356,7 @@ RULES:
 
 app.post('/api/decode-intent', async (req, res) => {
   try {
-    const { question, schemaProfile, semanticRules, relationships } = req.body;
+    const { question, schemaProfile, semanticRules, relationships, conversationContext } = req.body;
     if (!question) return res.status(400).json({ error: 'Missing question.' });
 
     const schemaCtx = schemaProfile
@@ -365,6 +365,9 @@ app.post('/api/decode-intent', async (req, res) => {
     const rulesCtx = semanticRules ? `\n\nBUSINESS RULES:\n${semanticRules}` : '';
     const relCtx   = relationships
       ? `\n\nDETECTED RELATIONSHIPS:\n${JSON.stringify(relationships, null, 2)}`
+      : '';
+    const convoCtx = Array.isArray(conversationContext) && conversationContext.length
+      ? `\n\nCONVERSATION CONTEXT (recent turns):\n${JSON.stringify(conversationContext.slice(-6), null, 2)}`
       : '';
 
     const models = isComplexQuestion(question)
@@ -378,7 +381,7 @@ app.post('/api/decode-intent', async (req, res) => {
           body: JSON.stringify({
             model, max_tokens: 800, temperature: 0, top_p: 1, seed: 42,
             messages: [
-              { role: 'system', content: DECODE_INTENT_SYSTEM + schemaCtx + rulesCtx + relCtx },
+              { role: 'system', content: DECODE_INTENT_SYSTEM + schemaCtx + rulesCtx + relCtx + convoCtx },
               { role: 'user',   content: `Question: ${question}` }
             ]
           })
@@ -495,34 +498,37 @@ app.post('/api/generate-code', async (req, res) => {
 // ════════════════════════════════════════════════════════════════════════════════
 // LAYER 4 — NARRATION
 // ════════════════════════════════════════════════════════════════════════════════
-const NARRATE_SYSTEM = `You are a senior data analyst narrating verified query results for a BI dashboard.
-You receive the question, the SQL used, and a sample of result rows (up to 30 rows).
+const NARRATE_SYSTEM = `You are a senior business data analyst narrating verified BI query results.
+You receive the question, SQL used, decoded intent, and a sample of result rows.
 
 CRITICAL RULES:
-1. NEVER repeat or echo raw data rows. Summarize findings in natural language only.
-2. NEVER recalculate. All numbers come from the verified result only.
-3. Be concise — do NOT pad responses. Keep each section short and punchy.
-4. Dates in results are ground truth — use them verbatim.
-5. If result is empty/null → "No records matched those conditions."
-6. The number 0 is NOT null — narrate 0 directly.
+1. Never fabricate values. Use only provided result rows.
+2. Never dump raw rows; summarize clearly for executives.
+3. Keep each section concise and action-oriented.
+4. If no rows matched, say it clearly and provide a practical next action.
+5. Treat zero as valid data, not missing data.
 
-RESULT HANDLING:
-- Array of rows → pick the 2-3 most significant values and name them
-- Ranked data → name #1 and the gap to #2
-- Trend/time-series → describe arc (rising/falling/stable), name peak and trough
-- Comparison → state winner and margin
-- Outliers → lead with count, name top 3
+Return EXACTLY six sections with these markers, each on its own line:
 
-Write THREE sections using EXACTLY these markers on their own lines:
+##DIRECT_ANSWER##
+1-2 sentences directly answering the question.
 
-##SUMMARY##
-1-2 sentences. Lead with the single most important number or finding.
+##WHAT_HAPPENED##
+1-2 sentences describing the main observed change/pattern.
 
-##INSIGHT##
-2-3 sentences of analytical commentary only. No raw data.
+##WHY_HAPPENED##
+1-2 sentences with the most likely explanation based on the result.
 
-##APPROACH##
-3-5 bullet points covering: data source, filters applied, aggregation used, row count, key assumption.`;
+##SUPPORTING_EVIDENCE##
+2-4 short bullet points with concrete evidence (numbers, ranking, trend points).
+
+##BUSINESS_IMPACT##
+1-2 sentences describing business impact (risk/opportunity/cost/revenue implications).
+
+##RECOMMENDED_ACTION##
+2-4 short bullet points with specific actions and monitoring suggestions.
+
+Return plain text only. Do not include markdown code fences.`;
 
 app.post('/api/interpret', async (req, res) => {
   try {
@@ -554,6 +560,90 @@ app.post('/api/interpret', async (req, res) => {
     }
     return res.json({ answer: typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result) });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// /api/generate-executive-summary — concise executive summary from recent answers
+app.post('/api/generate-executive-summary', async (req, res) => {
+  try {
+    const { question, sections, sql, rowsPreview } = req.body;
+    if (!question || !sections) return res.status(400).json({ error: 'Missing question or sections.' });
+
+    const system = 'You are an executive BI writer. Produce a concise, decision-ready summary in plain text with exactly three parts: Key Finding, Business Impact, Next Best Action. Keep under 140 words.';
+    const user = `Question: ${question}\nSections: ${JSON.stringify(sections, null, 2)}\nSQL: ${sql || ''}\nRows Preview: ${JSON.stringify(rowsPreview || [], null, 2)}`;
+
+    for (const model of MODEL_CANDIDATES) {
+      try {
+        const resp = await fetch(OPENAI_ENDPOINT, {
+          method: 'POST', headers: openaiHeaders(),
+          body: JSON.stringify({
+            model, max_tokens: 260, temperature: 0.2, top_p: 0.9, seed: 42,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user }
+            ]
+          })
+        });
+        const data = await resp.json();
+        if (!resp.ok) continue;
+        const summary = parseOpenAIAnswer(data);
+        if (summary) return res.json({ summary, model });
+      } catch (_) {}
+    }
+
+    const fallback = [
+      'Key Finding: ' + (sections.directAnswer || sections.summary || 'No direct finding available.'),
+      'Business Impact: ' + (sections.businessImpact || sections.insight || 'Impact could not be determined.'),
+      'Next Best Action: ' + (sections.recommendedAction || 'Validate assumptions, then monitor KPI trend weekly.')
+    ].join('\n');
+    res.json({ summary: fallback, model: 'fallback' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// /api/export-report — return a markdown business report for download
+app.post('/api/export-report', (req, res) => {
+  try {
+    const { question, sections, sql, tablesUsed, generatedAt } = req.body;
+    if (!question || !sections) return res.status(400).json({ error: 'Missing question or sections.' });
+
+    const ts = generatedAt || new Date().toISOString();
+    const report = [
+      '# ConvBI Business Report',
+      '',
+      `Generated: ${ts}`,
+      `Question: ${question}`,
+      `Tables: ${(tablesUsed || []).join(', ') || 'N/A'}`,
+      '',
+      '## 1) Direct Answer',
+      sections.directAnswer || sections.summary || 'N/A',
+      '',
+      '## 2) What Happened',
+      sections.whatHappened || 'N/A',
+      '',
+      '## 3) Why It Happened',
+      sections.whyHappened || 'N/A',
+      '',
+      '## 4) Supporting Evidence',
+      sections.supportingEvidence || 'N/A',
+      '',
+      '## 5) Business Impact',
+      sections.businessImpact || 'N/A',
+      '',
+      '## 6) Recommended Action',
+      sections.recommendedAction || 'N/A',
+      '',
+      '## SQL Used',
+      '```sql',
+      sql || '-- Not available',
+      '```',
+      ''
+    ].join('\n');
+
+    res.json({ fileName: `convbi_report_${Date.now()}.md`, content: report });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ════════════════════════════════════════════════════════════════════════════════

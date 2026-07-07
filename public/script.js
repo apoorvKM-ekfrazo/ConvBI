@@ -7,6 +7,8 @@ let activeTableSet = new Set(); // tables in scope for current question
 let pendingFiles   = []; // staged File objects before upload
 let voiceMgr       = null; // set by voice-manager.js
 let savedInsights  = JSON.parse(localStorage.getItem('convbi_insights') || '[]');
+let conversationTurns = []; // recent Q/A context for intent decoding
+const answerPayloadStore = {}; // cardId -> payload for exports
 
 // Databricks browser state (legacy compat)
 let dbBrowserState = { catalog: null, schema: null, table: null };
@@ -384,8 +386,10 @@ async function askQuestion() {
       const c = cacheRes.cached;
       const sections = parseInterpretSections(c.answer || '');
       renderAnswerCard(q, sections, c.sql || '', c.decoded || null, { rows: c.rows || [], columns: c.columns || [] }, allTableSchemas, true);
-      if (voiceMgr?.speakText && c.answer) voiceMgr.speakText(sections.summary);
-      saveToHistory(q, sections.summary, c.sql || '');
+      if (voiceMgr?.speakText && c.answer) voiceMgr.speakText(sections.directAnswer || sections.summary || '');
+      saveToHistory(q, sections.directAnswer || sections.summary || '', c.sql || '');
+      conversationTurns.push({ question: q, directAnswer: sections.directAnswer || sections.summary || '' });
+      conversationTurns = conversationTurns.slice(-8);
       return;
     }
 
@@ -400,7 +404,13 @@ async function askQuestion() {
     updateThinking(thinkingId, 'Decoding intent…');
     const intRes  = await fetch(`${API}/api/decode-intent`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ question: q, schemaProfile: allTableSchemas, semanticRules, relationships: relData })
+      body: JSON.stringify({
+        question: q,
+        schemaProfile: allTableSchemas,
+        semanticRules,
+        relationships: relData,
+        conversationContext: conversationTurns
+      })
     });
     const intData = intRes.ok ? await intRes.json() : {};
     const decoded = intData.decoded;
@@ -455,13 +465,30 @@ async function askQuestion() {
       if (!answerText) {
         const n = allRows.length;
         const colNames = (execData.columns||[]).map(c=>c.name).join(', ');
-        answerText = `##SUMMARY##\nQuery returned ${n} row${n!==1?'s':''}.${colNames ? ' Columns: ' + colNames + '.' : ''}\n##INSIGHT##\nNo narrative available — check the LLM connection.\n##APPROACH##\n1. SQL executed successfully.\n2. ${n} rows returned.`;
+        answerText = [
+          '##DIRECT_ANSWER##',
+          `Query returned ${n} row${n!==1?'s':''}.`,
+          '##WHAT_HAPPENED##',
+          colNames ? `The query produced data with columns: ${colNames}.` : 'The query completed successfully.',
+          '##WHY_HAPPENED##',
+          'This result reflects the applied filters and aggregation in the generated SQL.',
+          '##SUPPORTING_EVIDENCE##',
+          `- Returned rows: ${n}`,
+          '- SQL executed successfully',
+          '##BUSINESS_IMPACT##',
+          'Use this result to validate current performance and identify whether action is needed.',
+          '##RECOMMENDED_ACTION##',
+          '- Review top and bottom contributors',
+          '- Compare with previous period for context'
+        ].join('\n');
       }
       const sections = parseInterpretSections(answerText);
       renderAnswerCard(q, sections, sql, decoded, execData, allTableSchemas);
 
       // Save to history
-      saveToHistory(q, sections.summary, sql);
+      saveToHistory(q, sections.directAnswer || sections.summary || '', sql);
+      conversationTurns.push({ question: q, directAnswer: sections.directAnswer || sections.summary || '' });
+      conversationTurns = conversationTurns.slice(-8);
       localStorage.setItem('convbi_tables_updated', Date.now().toString());
 
       if (_cacheKey) {
@@ -556,14 +583,37 @@ function appendErrorMessage(msg) {
 
 // ── Parse ##SUMMARY## / ##INSIGHT## / ##APPROACH## ───────────────────────────
 function parseInterpretSections(text) {
-  if (!text) return { summary: text, insight: null, approach: null };
+  if (!text) return { summary: text };
+  const da = text.match(/##DIRECT_ANSWER##\s*([\s\S]*?)(?=##WHAT_HAPPENED##|##WHY_HAPPENED##|##SUPPORTING_EVIDENCE##|##BUSINESS_IMPACT##|##RECOMMENDED_ACTION##|$)/i);
+  const wh = text.match(/##WHAT_HAPPENED##\s*([\s\S]*?)(?=##DIRECT_ANSWER##|##WHY_HAPPENED##|##SUPPORTING_EVIDENCE##|##BUSINESS_IMPACT##|##RECOMMENDED_ACTION##|$)/i);
+  const yh = text.match(/##WHY_HAPPENED##\s*([\s\S]*?)(?=##DIRECT_ANSWER##|##WHAT_HAPPENED##|##SUPPORTING_EVIDENCE##|##BUSINESS_IMPACT##|##RECOMMENDED_ACTION##|$)/i);
+  const se = text.match(/##SUPPORTING_EVIDENCE##\s*([\s\S]*?)(?=##DIRECT_ANSWER##|##WHAT_HAPPENED##|##WHY_HAPPENED##|##BUSINESS_IMPACT##|##RECOMMENDED_ACTION##|$)/i);
+  const bi = text.match(/##BUSINESS_IMPACT##\s*([\s\S]*?)(?=##DIRECT_ANSWER##|##WHAT_HAPPENED##|##WHY_HAPPENED##|##SUPPORTING_EVIDENCE##|##RECOMMENDED_ACTION##|$)/i);
+  const ra = text.match(/##RECOMMENDED_ACTION##\s*([\s\S]*?)(?=##DIRECT_ANSWER##|##WHAT_HAPPENED##|##WHY_HAPPENED##|##SUPPORTING_EVIDENCE##|##BUSINESS_IMPACT##|$)/i);
+
+  if (da || wh || yh || se || bi || ra) {
+    return {
+      directAnswer: da ? da[1].trim() : '',
+      whatHappened: wh ? wh[1].trim() : '',
+      whyHappened: yh ? yh[1].trim() : '',
+      supportingEvidence: se ? se[1].trim() : '',
+      businessImpact: bi ? bi[1].trim() : '',
+      recommendedAction: ra ? ra[1].trim() : '',
+      summary: da ? da[1].trim() : text.trim()
+    };
+  }
+
   const sm = text.match(/##SUMMARY##\s*([\s\S]*?)(?=##INSIGHT##|##APPROACH##|$)/i);
   const im = text.match(/##INSIGHT##\s*([\s\S]*?)(?=##SUMMARY##|##APPROACH##|$)/i);
   const am = text.match(/##APPROACH##\s*([\s\S]*?)(?=##SUMMARY##|##INSIGHT##|$)/i);
   return {
-    summary:  sm ? sm[1].trim() : text.trim(),
-    insight:  im ? im[1].trim() : null,
-    approach: am ? am[1].trim() : null
+    directAnswer: sm ? sm[1].trim() : text.trim(),
+    whatHappened: im ? im[1].trim() : '',
+    whyHappened: '',
+    supportingEvidence: am ? am[1].trim() : '',
+    businessImpact: '',
+    recommendedAction: '',
+    summary: sm ? sm[1].trim() : text.trim()
   };
 }
 
@@ -576,13 +626,21 @@ function renderAnswerCard(question, sections, sql, decoded, execData, schemas, f
   const tablesUsed = decoded?.tables_needed || Object.keys(schemas||{}).slice(0,3);
   const joinInfo   = decoded?.join_hint ? `<div class="answer-join">JOIN: ${escapeHtml(decoded.join_hint)}</div>` : '';
 
-  // Attempt auto-chart from result rows
+  // Build chart, but keep it hidden by default (dashboard-first UX)
   let chartHtml = '';
   if (execData?.rows?.length > 1) {
     chartHtml = buildEChartsHtml(execData.columns || [], execData.rows, question);
   }
 
   const cardId = 'ac_' + Date.now();
+  answerPayloadStore[cardId] = {
+    question,
+    sections,
+    sql,
+    tablesUsed,
+    rowsPreview: (execData?.rows || []).slice(0, 20)
+  };
+
   div.innerHTML = `
     <div class="msg-bubble answer-card" id="${cardId}">
       <div class="answer-meta">
@@ -590,13 +648,16 @@ function renderAnswerCard(question, sections, sql, decoded, execData, schemas, f
         ${fromCache ? '<span class="cached-badge">&#9889; cached</span>' : ''}
         ${joinInfo}
       </div>
-      <div class="answer-summary">${escapeHtml(sections.summary)}</div>
+      <div class="answer-summary"><strong>1) Direct Answer:</strong> ${escapeHtml(sections.directAnswer || sections.summary || '')}</div>
+      <div class="answer-insight"><strong>2) What Happened:</strong> ${escapeHtml(sections.whatHappened || 'Not available')}</div>
+      <div class="answer-insight"><strong>3) Why It Happened:</strong> ${escapeHtml(sections.whyHappened || 'Not available')}</div>
+      <div class="answer-insight"><strong>4) Supporting Evidence:</strong><br/>${escapeHtml(sections.supportingEvidence || 'Not available').replace(/\n/g,'<br/>')}</div>
+      <div class="answer-insight"><strong>5) Business Impact:</strong> ${escapeHtml(sections.businessImpact || 'Not available')}</div>
+      <div class="answer-insight"><strong>6) Recommended Action:</strong><br/>${escapeHtml(sections.recommendedAction || 'Not available').replace(/\n/g,'<br/>')}</div>
       ${chartHtml}
-      ${sections.insight ? `<div class="answer-insight">${escapeHtml(sections.insight)}</div>` : ''}
       <details class="answer-approach-detail">
         <summary class="approach-toggle">How this was solved</summary>
         <div class="approach-body">
-          ${sections.approach ? `<div class="answer-approach-text">${escapeHtml(sections.approach)}</div>` : ''}
           <details class="sql-detail">
             <summary class="sql-toggle">⟨/⟩ View SQL</summary>
             <pre class="sql-pre">${escapeHtml(sql||'')}</pre>
@@ -606,8 +667,10 @@ function renderAnswerCard(question, sections, sql, decoded, execData, schemas, f
       </details>
       <div class="answer-actions">
         <button class="action-btn" onclick="speakAnswer('${cardId}')">🔊 Speak</button>
-        <button class="action-btn" onclick="pinInsight('${cardId}','${escapeHtml(question)}','${escapeHtml(sections.summary)}')">📌 Pin</button>
-        <button class="action-btn" onclick="chartAnswer('${cardId}')">📊 Chart</button>
+        <button class="action-btn" onclick="pinInsight('${cardId}','${escapeHtml(question)}','${escapeHtml(sections.directAnswer || sections.summary || '')}')">📌 Pin</button>
+        <button class="action-btn" onclick="chartAnswer('${cardId}')">📊 Show/Hide Chart</button>
+        <button class="action-btn" onclick="exportAnswerReport('${cardId}')">Export Report</button>
+        <button class="action-btn" onclick="generateExecutiveSummary('${cardId}')">Executive Summary</button>
       </div>
     </div>`;
 
@@ -626,9 +689,8 @@ function toggleMic() {
 // ── Speak answer ─────────────────────────────────────────────────────────────
 function speakAnswer(cardId) {
   const card = document.getElementById(cardId);
-  const sumEl = card?.querySelector('.answer-summary');
-  const insEl = card?.querySelector('.answer-insight');
-  const text  = [sumEl?.textContent, insEl?.textContent].filter(Boolean).join('. ');
+  const blocks = card ? [...card.querySelectorAll('.answer-summary, .answer-insight')] : [];
+  const text  = blocks.map(b => b.textContent).filter(Boolean).join('. ');
   if (!voiceMgr || !text) return;
   // If currently speaking this card, stop
   const stopBtn = card?.querySelector('.speak-stop-btn');
@@ -658,10 +720,71 @@ function copySQL(cardId) {
 function chartAnswer(cardId) {
   const card = document.getElementById(cardId);
   if (!card) return;
-  if (card.querySelector('.ec-chart-wrap')) return; // already charted
-  // Trigger re-render — chart was already built inline, just toggle visibility
   const cw = card.querySelector('.ec-chart-wrap');
   if (cw) cw.style.display = cw.style.display === 'none' ? '' : 'none';
+}
+
+async function exportAnswerReport(cardId) {
+  const payload = answerPayloadStore[cardId];
+  if (!payload) return showError('Report data not found for this answer.');
+  try {
+    const res = await fetch(`${API}/api/export-report`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        question: payload.question,
+        sections: payload.sections,
+        sql: payload.sql,
+        tablesUsed: payload.tablesUsed,
+        generatedAt: new Date().toISOString()
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not export report.');
+    downloadTextFile(data.fileName || `convbi_report_${Date.now()}.md`, data.content || '');
+    showSuccess('Business report exported.');
+  } catch (e) {
+    showError('Export failed: ' + e.message);
+  }
+}
+
+async function generateExecutiveSummary(cardId) {
+  const payload = answerPayloadStore[cardId];
+  if (!payload) return showError('Summary data not found for this answer.');
+  try {
+    const res = await fetch(`${API}/api/generate-executive-summary`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        question: payload.question,
+        sections: payload.sections,
+        sql: payload.sql,
+        rowsPreview: payload.rowsPreview
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Executive summary unavailable.');
+    appendExecutiveSummaryMessage(payload.question, data.summary || 'No summary generated.');
+  } catch (e) {
+    showError('Executive summary failed: ' + e.message);
+  }
+}
+
+function appendExecutiveSummaryMessage(question, summary) {
+  const msgs = document.getElementById('messages');
+  const div  = document.createElement('div');
+  div.className = 'msg bot';
+  div.innerHTML = `<div class="msg-bubble"><strong>Executive Summary</strong><br/>${escapeHtml(summary).replace(/\n/g,'<br/>')}</div>`;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  saveToHistory(`Executive Summary: ${question}`, summary, '');
+}
+
+function downloadTextFile(fileName, text) {
+  const blob = new Blob([text], { type: 'text/markdown' });
+  const a = Object.assign(document.createElement('a'), {
+    href: URL.createObjectURL(blob),
+    download: fileName
+  });
+  a.click();
 }
 
 // ── Chip / history ────────────────────────────────────────────────────────────
@@ -733,7 +856,7 @@ function buildEChartsHtml(columns, rows, question) {
 
   if (!option) return '';
   pendingECharts.push({ id, option });
-  return `<div class="ec-chart-wrap"><div id="${id}" style="width:100%;height:240px"></div></div>`;
+  return `<div class="ec-chart-wrap" style="display:none"><div id="${id}" style="width:100%;height:240px"></div></div>`;
 }
 
 function renderPendingECharts() {
