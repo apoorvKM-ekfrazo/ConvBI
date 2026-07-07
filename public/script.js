@@ -381,7 +381,7 @@ async function askQuestion() {
       body: JSON.stringify({ question: q, schemaHash, rowChecksum })
     }).then(r => r.ok ? r.json() : { hit: false }).catch(() => ({ hit: false }));
 
-    if (cacheRes.hit && cacheRes.cached) {
+    if (cacheRes.hit && cacheRes.cached && hasLewSections(cacheRes.cached.answer || '')) {
       removeThinking(thinkingId);
       const c = cacheRes.cached;
       const sections = parseInterpretSections(c.answer || '');
@@ -798,6 +798,19 @@ function saveToHistory(q, summary, sql) {
   queryHistory.unshift({ q, summary, sql, ts: new Date().toISOString() });
   if (queryHistory.length > 20) queryHistory.pop();
   localStorage.setItem('convbi_history', JSON.stringify(queryHistory));
+}
+
+function hasLewSections(text) {
+  if (!text) return false;
+  const tags = [
+    '##DIRECT_ANSWER##',
+    '##WHAT_HAPPENED##',
+    '##WHY_HAPPENED##',
+    '##SUPPORTING_EVIDENCE##',
+    '##BUSINESS_IMPACT##',
+    '##RECOMMENDED_ACTION##'
+  ];
+  return tags.every(t => String(text).includes(t));
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

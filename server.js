@@ -122,6 +122,77 @@ function isComplexQuestion(q) {
   return kw.some(k => q.toLowerCase().includes(k));
 }
 
+const LEW_SECTIONS = [
+  'DIRECT_ANSWER',
+  'WHAT_HAPPENED',
+  'WHY_HAPPENED',
+  'SUPPORTING_EVIDENCE',
+  'BUSINESS_IMPACT',
+  'RECOMMENDED_ACTION'
+];
+
+function parseLewSectionsText(text) {
+  const parsed = {};
+  const src = String(text || '');
+  for (const tag of LEW_SECTIONS) {
+    const re = new RegExp(`##${tag}##\\s*([\\s\\S]*?)(?=##(?:${LEW_SECTIONS.join('|')})##|$)`, 'i');
+    const m = src.match(re);
+    parsed[tag] = m ? m[1].trim() : '';
+  }
+  return parsed;
+}
+
+function hasAllLewSections(text) {
+  const p = parseLewSectionsText(text);
+  return LEW_SECTIONS.every(tag => !!p[tag]);
+}
+
+function renderLewSections(sections) {
+  return [
+    '##DIRECT_ANSWER##', sections.DIRECT_ANSWER || 'Not available.',
+    '##WHAT_HAPPENED##', sections.WHAT_HAPPENED || 'Not available.',
+    '##WHY_HAPPENED##', sections.WHY_HAPPENED || 'Not available.',
+    '##SUPPORTING_EVIDENCE##', sections.SUPPORTING_EVIDENCE || '- Not available.',
+    '##BUSINESS_IMPACT##', sections.BUSINESS_IMPACT || 'Not available.',
+    '##RECOMMENDED_ACTION##', sections.RECOMMENDED_ACTION || '- Review the result with domain owners.'
+  ].join('\n');
+}
+
+function makeLewFallbackNarrative(question, result) {
+  const rows = Array.isArray(result) ? result : (result && typeof result === 'object' ? [result] : []);
+  const count = rows.length;
+  const first = rows[0] || {};
+  const cols = Object.keys(first);
+  const evidence = [
+    `- Returned rows: ${count}`,
+    cols.length ? `- Columns: ${cols.join(', ')}` : '- Columns: none',
+    count ? `- First row snapshot keys: ${Object.keys(first).slice(0, 6).join(', ') || 'none'}` : '- No matching rows found'
+  ].join('\n');
+
+  return renderLewSections({
+    DIRECT_ANSWER: count ? `The query completed successfully and returned ${count} row${count !== 1 ? 's' : ''}.` : 'No records matched those conditions.',
+    WHAT_HAPPENED: count ? 'The requested analytical result was computed from the available dataset.' : 'No matching records were found for the requested conditions.',
+    WHY_HAPPENED: count ? 'The result reflects the generated SQL filters, grouping, and aggregation logic.' : 'The selected filters or conditions were too restrictive for the current data.',
+    SUPPORTING_EVIDENCE: evidence,
+    BUSINESS_IMPACT: count ? 'Use this result to guide operational and KPI decisions with current evidence.' : 'Decision-making risk is higher without matching data; assumptions should be reviewed.',
+    RECOMMENDED_ACTION: [
+      '- Validate filters and time range.',
+      '- Compare with previous period.',
+      '- Monitor the related KPI weekly.'
+    ].join('\n')
+  });
+}
+
+function normalizeExecutiveSummary(text, sections) {
+  const src = String(text || '').trim();
+  const lines = src.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  const getLine = prefix => lines.find(l => l.toLowerCase().startsWith(prefix.toLowerCase()));
+  const kf = getLine('Key Finding:') || `Key Finding: ${sections?.directAnswer || sections?.summary || 'No direct finding available.'}`;
+  const bi = getLine('Business Impact:') || `Business Impact: ${sections?.businessImpact || 'Impact could not be determined from available evidence.'}`;
+  const nb = getLine('Next Best Action:') || `Next Best Action: ${sections?.recommendedAction || 'Validate assumptions, then monitor KPI trend weekly.'}`;
+  return [kf, bi, nb].join('\n');
+}
+
 // ── /api/ping ─────────────────────────────────────────────────────────────────
 app.get('/api/ping', (req, res) => res.json({ status: 'ok', version: 'v2' }));
 
@@ -191,6 +262,51 @@ app.post('/api/detect-relationships', async (req, res) => {
   try {
     const result = await cm.detectRelationships();
     res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/semantic-model — metadata + semantic model for current registered tables
+app.get('/api/semantic-model', async (req, res) => {
+  if (!cm) return res.status(503).json({ error: 'Engine not available.' });
+  try {
+    const tables = await cm.listTables();
+    const rel = await cm.detectRelationships();
+    const model = { tables: {}, globalMeasures: [], globalDimensions: [], relationships: rel.joins || [] };
+    const gm = new Set();
+    const gd = new Set();
+
+    for (const [tableName, meta] of Object.entries(tables || {})) {
+      const cols = meta.columns || [];
+      const measures = [];
+      const dimensions = [];
+      const dates = [];
+
+      for (const c of cols) {
+        const t = String(c.type || '').toUpperCase();
+        if (/INT|DOUBLE|FLOAT|DECIMAL|REAL|NUMERIC|BIGINT|SMALLINT|TINYINT/.test(t)) {
+          measures.push(c.name); gm.add(c.name);
+        } else if (/DATE|TIME|TIMESTAMP/.test(t) || /date|time|month|year|quarter|week/i.test(c.name)) {
+          dates.push(c.name); dimensions.push(c.name); gd.add(c.name);
+        } else {
+          dimensions.push(c.name); gd.add(c.name);
+        }
+      }
+
+      model.tables[tableName] = {
+        source: meta.source || 'file',
+        rowCount: meta.rowCount || 0,
+        measures,
+        dimensions,
+        dates,
+        kpiCandidates: measures.slice(0, 6)
+      };
+    }
+
+    model.globalMeasures = [...gm];
+    model.globalDimensions = [...gd];
+    res.json({ semanticModel: model });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -554,11 +670,43 @@ app.post('/api/interpret', async (req, res) => {
         });
         const data = await resp.json();
         if (!resp.ok) { const m = data?.error?.message || ''; if (m.toLowerCase().includes('model')) continue; return res.status(resp.status).json({ error: m }); }
-        const answer = parseOpenAIAnswer(data);
+        let answer = parseOpenAIAnswer(data) || '';
+
+        if (!hasAllLewSections(answer)) {
+          // Force one repair pass to guarantee the six-section contract.
+          const fixResp = await fetch(OPENAI_ENDPOINT, {
+            method: 'POST', headers: openaiHeaders(),
+            body: JSON.stringify({
+              model, max_tokens: 700, temperature: 0, top_p: 1, seed: 42,
+              messages: [
+                {
+                  role: 'system',
+                  content: `Rewrite content into EXACTLY these six markers with non-empty content:\n${LEW_SECTIONS.map(s => `##${s}##`).join('\n')}\nReturn plain text only.`
+                },
+                {
+                  role: 'user',
+                  content: `Question: ${question}${intentCtx}${sqlCtx}\n\nResult: ${JSON.stringify(result)}\n\nDraft:\n${answer}`
+                }
+              ]
+            })
+          });
+          const fixData = await fixResp.json().catch(() => null);
+          if (fixResp.ok && fixData) {
+            const repaired = parseOpenAIAnswer(fixData) || '';
+            if (hasAllLewSections(repaired)) answer = repaired;
+          }
+        }
+
+        if (!hasAllLewSections(answer)) {
+          answer = makeLewFallbackNarrative(question, result);
+        } else {
+          answer = renderLewSections(parseLewSectionsText(answer));
+        }
+
         return res.json({ answer, model });
       } catch (_) {}
     }
-    return res.json({ answer: typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result) });
+    return res.json({ answer: makeLewFallbackNarrative(question, result), model: 'fallback' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -585,16 +733,16 @@ app.post('/api/generate-executive-summary', async (req, res) => {
         });
         const data = await resp.json();
         if (!resp.ok) continue;
-        const summary = parseOpenAIAnswer(data);
+        const summary = normalizeExecutiveSummary(parseOpenAIAnswer(data), sections);
         if (summary) return res.json({ summary, model });
       } catch (_) {}
     }
 
-    const fallback = [
+    const fallback = normalizeExecutiveSummary([
       'Key Finding: ' + (sections.directAnswer || sections.summary || 'No direct finding available.'),
       'Business Impact: ' + (sections.businessImpact || sections.insight || 'Impact could not be determined.'),
       'Next Best Action: ' + (sections.recommendedAction || 'Validate assumptions, then monitor KPI trend weekly.')
-    ].join('\n');
+    ].join('\n'), sections);
     res.json({ summary: fallback, model: 'fallback' });
   } catch (e) {
     res.status(500).json({ error: e.message });

@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "install-deps": "npm install"
+    "install-deps": "npm install",
+    "smoke:lew": "node scripts/smoke-lew-logic.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1063.0",

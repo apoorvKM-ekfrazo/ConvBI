@@ -158,8 +158,8 @@ async function loadDashboard() {
 
   renderKPIStrip(samples);
   renderRelationshipMap(names, relData);
-  renderSmartCharts(names, 'overviewCharts', 2);
-  renderSmartCharts(names, 'chartsSection',  6);
+  renderSmartCharts(names, 'overviewCharts', 2, samples);
+  renderSmartCharts(names, 'chartsSection',  6, samples);
   renderHistory();
   renderInsights();
 
@@ -371,7 +371,7 @@ function renderRelationshipMap(names, relData) {
 }
 
 // ── Smart chart gallery (uses /api/charts/:tableName pipeline) ────────────────
-async function renderSmartCharts(tableNames, containerId, maxCharts) {
+async function renderSmartCharts(tableNames, containerId, maxCharts, samplesForFallback = {}) {
   const container = document.getElementById(containerId);
   if (!container) return;
   container.innerHTML = '<div style="padding:16px;color:var(--text-muted);font-size:13px">Selecting best charts…</div>';
@@ -417,7 +417,11 @@ async function renderSmartCharts(tableNames, containerId, maxCharts) {
   }
 
   if (!count) {
-    container.innerHTML = '<div class="rel-map-empty">No chart-able data found in loaded tables.</div>';
+    // Fallback path: build deterministic charts from sampled rows if smart scoring yields none.
+    renderAutoCharts(samplesForFallback, containerId, maxCharts);
+    if (!container.children.length) {
+      container.innerHTML = '<div class="rel-map-empty">No chart-able data found in loaded tables.</div>';
+    }
   }
 }
 
