@@ -126,6 +126,179 @@ function tryInitChart(id, option) {
   return true;
 }
 
+function shortFallbackSummary(meta = {}, option = {}) {
+  const type = String(meta.type || option?.series?.[0]?.type || '').toLowerCase();
+  const series = Array.isArray(option.series) ? option.series : [];
+  const first = series[0] || {};
+  const xLabels = Array.isArray(option?.xAxis?.data) ? option.xAxis.data : [];
+
+  const numericVals = (Array.isArray(first.data) ? first.data : [])
+    .map(v => {
+      if (typeof v === 'number') return v;
+      if (Array.isArray(v) && typeof v[1] === 'number') return v[1];
+      if (v && typeof v === 'object' && typeof v.value === 'number') return v.value;
+      return NaN;
+    })
+    .filter(v => Number.isFinite(v));
+
+  if ((type === 'line' || type === 'bar') && numericVals.length >= 2) {
+    const firstVal = numericVals[0];
+    const lastVal = numericVals[numericVals.length - 1];
+    const change = firstVal === 0 ? 0 : ((lastVal - firstVal) / Math.abs(firstVal)) * 100;
+    const firstLabel = xLabels[0] != null ? String(xLabels[0]) : 'start';
+    const lastLabel = xLabels[numericVals.length - 1] != null ? String(xLabels[numericVals.length - 1]) : 'latest';
+    if (Math.abs(change) >= 8) {
+      return change > 0
+        ? `Increased from ${firstVal.toFixed(1)} to ${lastVal.toFixed(1)} (${Math.abs(change).toFixed(1)}%) between ${firstLabel} and ${lastLabel}.`
+        : `Dropped from ${firstVal.toFixed(1)} to ${lastVal.toFixed(1)} (${Math.abs(change).toFixed(1)}%) between ${firstLabel} and ${lastLabel}.`;
+    }
+    const avg = numericVals.reduce((a, b) => a + b, 0) / numericVals.length;
+    return `Stayed mostly stable around ${avg.toFixed(1)} from ${firstLabel} to ${lastLabel}.`;
+  }
+
+  if (type === 'pie' && Array.isArray(first.data) && first.data.length) {
+    const vals = first.data.map(d => +d.value || 0);
+    const total = vals.reduce((a, b) => a + b, 0);
+    if (total > 0) {
+      let maxIdx = 0;
+      for (let i = 1; i < vals.length; i++) if (vals[i] > vals[maxIdx]) maxIdx = i;
+      const share = (vals[maxIdx] / total) * 100;
+      const topName = first.data[maxIdx]?.name || 'Top segment';
+      if (share >= 45) return `${topName} leads with ${share.toFixed(1)}% of total, far above other segments.`;
+      if (share >= 30) return `${topName} is highest at ${share.toFixed(1)}%, but others still contribute.`;
+      return `${topName} is highest at ${share.toFixed(1)}%, showing a relatively balanced split.`;
+    }
+  }
+
+  if (type === 'scatter' && Array.isArray(first.data) && first.data.length >= 6) {
+    const pts = first.data
+      .map(p => Array.isArray(p) ? [Number(p[0]), Number(p[1])] : null)
+      .filter(p => p && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+    if (pts.length >= 6) {
+      const n = pts.length;
+      const sx = pts.reduce((s, p) => s + p[0], 0);
+      const sy = pts.reduce((s, p) => s + p[1], 0);
+      const sxx = pts.reduce((s, p) => s + p[0] * p[0], 0);
+      const syy = pts.reduce((s, p) => s + p[1] * p[1], 0);
+      const sxy = pts.reduce((s, p) => s + p[0] * p[1], 0);
+      const num = n * sxy - sx * sy;
+      const den = Math.sqrt(Math.max((n * sxx - sx * sx) * (n * syy - sy * sy), 0));
+      const r = den ? num / den : 0;
+      if (r >= 0.5) return `Strong same-direction movement in points (r=${r.toFixed(2)}), with both values increasing together.`;
+      if (r <= -0.5) return `Strong opposite movement in points (r=${r.toFixed(2)}), where increases in one align with decreases in the other.`;
+      return `No strong link in points (r=${r.toFixed(2)}), so changes in one value do not reliably predict the other.`;
+    }
+  }
+
+  const y = String(meta.yCol || '').replace(/_/g, ' ').trim();
+  const x = String(meta.xCol || '').replace(/_/g, ' ').trim();
+  if (y && x) return `${y} changes across ${x}, with visible differences between groups.`;
+  return 'Pattern detected from chart values.';
+}
+
+function isWeakSummary(summary = '') {
+  const s = String(summary).toLowerCase().trim();
+  const genericPhrases = [
+    'values are going up over time',
+    'values are going down over time',
+    'values are mostly stable over time',
+    'the parts are fairly balanced',
+    'there is no clear relationship here',
+    'this chart shows the main data pattern'
+  ];
+  const hasEvidenceNumber = /\d/.test(s);
+  const genericMatch = genericPhrases.some(p => s.includes(p));
+  return genericMatch || !hasEvidenceNumber;
+}
+
+function buildChartPreview(option) {
+  const opt = option || {};
+  const s0 = (opt.series || [])[0] || {};
+  const x = (opt.xAxis && opt.xAxis.data) || [];
+  const yRaw = Array.isArray(s0.data) ? s0.data.slice(0, 12) : [];
+  const y = yRaw.map(v => {
+    if (v && typeof v === 'object' && Array.isArray(v.value)) return v.value;
+    return v;
+  });
+  return {
+    x: x.slice(0, 12),
+    y
+  };
+}
+
+function isTitleLikeSummary(summary, meta = {}) {
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const sm = norm(summary);
+  if (!sm) return true;
+
+  const title = norm(meta.title);
+  const subtitle = norm(meta.subtitle);
+  if (title && (sm === title || title.includes(sm) || sm.includes(title))) return true;
+  if (subtitle && (sm === subtitle || subtitle.includes(sm) || sm.includes(subtitle))) return true;
+
+  const generic = [
+    'chart summary',
+    'key pattern shown',
+    'chart insight',
+    'summary',
+    'insight'
+  ];
+  return generic.includes(sm);
+}
+
+async function fillChartSummary(summaryId, meta, option) {
+  const el = document.getElementById(summaryId);
+  if (!el) return;
+
+  const fallback = shortFallbackSummary(meta, option);
+  el.textContent = 'Summarizing...';
+
+  try {
+    const res = await fetch(`${API}/api/chart-summary`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chart: {
+          title: meta.title || '',
+          subtitle: meta.subtitle || '',
+          type: meta.type || '',
+          tableName: meta.tableName || '',
+          xCol: meta.xCol || '',
+          yCol: meta.yCol || ''
+        },
+        preview: buildChartPreview(option)
+      })
+    });
+
+    if (!res.ok) throw new Error('summary api failed');
+    const data = await res.json();
+    const summary = String(data.summary || '').trim();
+    el.textContent = (!summary || isTitleLikeSummary(summary, meta) || isWeakSummary(summary)) ? fallback : summary;
+  } catch (_) {
+    el.textContent = fallback;
+  }
+}
+
+function buildChartCard({ container, chartId, title, sub, option, summaryMeta, delayIndex }) {
+  const summaryId = `${chartId}_summary`;
+  const card = document.createElement('div');
+  card.className = 'db-chart-card';
+  card.innerHTML = `
+    <div class="db-chart-card-title">${escapeHtml(title)}</div>
+    <div class="db-chart-card-sub">${escapeHtml(sub)}</div>
+    <div class="db-chart-inner" id="${chartId}"></div>
+    <div class="db-chart-summary" id="${summaryId}">Summarizing...</div>`;
+  container.appendChild(card);
+
+  const cid = chartId;
+  const opt = option;
+  setTimeout(() => {
+    if (!tryInitChart(cid, opt)) pendingCharts.push({ id: cid, option: opt });
+  }, 80 + delayIndex * 30);
+
+  fillChartSummary(summaryId, summaryMeta, option);
+}
+
 function toggleSidebar() {
   sidebarOpen = !sidebarOpen;
   document.getElementById('sidebar').classList.toggle('collapsed', !sidebarOpen);
@@ -465,18 +638,22 @@ async function renderSmartCharts(tableNames, containerId, maxCharts, samplesForF
     const title = def.option?.title?.text || `${(def.yCol||'').replace(/_/g,' ')} by ${(def.xCol||'').replace(/_/g,' ')}`;
     const sub   = `${def.type} · score ${def.score} · ${def.tableName}`;
 
-    const card = document.createElement('div');
-    card.className = 'db-chart-card';
-    card.innerHTML = `
-      <div class="db-chart-card-title">${escapeHtml(title)}</div>
-      <div class="db-chart-card-sub">${escapeHtml(sub)}</div>
-      <div class="db-chart-inner" id="${cid}"></div>`;
-    container.appendChild(card);
-
-    const opt = def.option;
-    setTimeout(() => {
-      if (!tryInitChart(cid, opt)) pendingCharts.push({ id: cid, option: opt });
-    }, 80 + count * 30);
+    buildChartCard({
+      container,
+      chartId: cid,
+      title,
+      sub,
+      option: def.option,
+      summaryMeta: {
+        title,
+        subtitle: sub,
+        type: def.type,
+        tableName: def.tableName,
+        xCol: def.xCol,
+        yCol: def.yCol
+      },
+      delayIndex: count
+    });
 
     count++;
   }
@@ -606,18 +783,22 @@ function renderAutoCharts(samples, containerId, maxCharts) {
     for (const chartDef of charts) {
       if (count >= maxCharts) break;
       const chartId = `ac_${name.replace(/[^a-z0-9]/gi,'_')}_${count}`;
-      const card = document.createElement('div');
-      card.className = 'db-chart-card';
-      card.innerHTML = `
-        <div class="db-chart-card-title">${escapeHtml(chartDef.title)}</div>
-        <div class="db-chart-card-sub">${escapeHtml(chartDef.sub)}</div>
-        <div class="db-chart-inner" id="${chartId}"></div>`;
-      container.appendChild(card);
-
-      const opt = chartDef.option, cid = chartId;
-      setTimeout(() => {
-        if (!tryInitChart(cid, opt)) pendingCharts.push({ id: cid, option: opt });
-      }, 80 + count * 30);
+      buildChartCard({
+        container,
+        chartId,
+        title: chartDef.title,
+        sub: chartDef.sub,
+        option: chartDef.option,
+        summaryMeta: {
+          title: chartDef.title,
+          subtitle: chartDef.sub,
+          type: (chartDef.option?.series?.[0]?.type || '').toLowerCase(),
+          tableName: name,
+          xCol: '',
+          yCol: ''
+        },
+        delayIndex: count
+      });
 
       count++;
     }

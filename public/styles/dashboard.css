@@ -368,6 +368,14 @@ body.sidebar-collapsed .db-float-toggle { left: var(--sidebar-wc); }
 }
 .db-chart-card-sub   { font-size: 11px; color: var(--text-muted); margin-bottom: 14px; padding-left: 11px; }
 .db-chart-inner      { height: 260px; }
+.db-chart-summary {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 12px;
+  color: var(--text-secondary);
+  min-height: 20px;
+}
 
 /* ── Table explorer ───────────────────────────── */
 .db-table-select {

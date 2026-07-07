@@ -193,6 +193,32 @@ function normalizeExecutiveSummary(text, sections) {
   return [kf, bi, nb].join('\n');
 }
 
+function normalizeChartSummary(text, fallback, chart) {
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const src = String(text || '').replace(/[\r\n]+/g, ' ').replace(/^["'`]+|["'`]+$/g, '').trim();
+  const words = src.split(/\s+/).filter(Boolean).slice(0, 24);
+  const clean = words.join(' ').replace(/[.,;:!?]+$/g, '');
+  const nClean = norm(clean);
+  const nTitle = norm(chart?.title || '');
+  const nSub = norm(chart?.subtitle || '');
+  const hasNumber = /\d/.test(clean);
+  const weakPhrases = [
+    'values are going up over time',
+    'values are going down over time',
+    'values are mostly stable over time',
+    'the parts are fairly balanced',
+    'there is no clear relationship here',
+    'this chart shows the main data pattern'
+  ];
+  if (!clean) return fallback;
+  if ((nTitle && (nClean === nTitle || nTitle.includes(nClean) || nClean.includes(nTitle))) ||
+      (nSub && (nClean === nSub || nSub.includes(nClean) || nClean.includes(nSub)))) {
+    return fallback;
+  }
+  if (!hasNumber || weakPhrases.some(p => nClean.includes(p))) return fallback;
+  return clean;
+}
+
 const WORKFLOW_BLUEPRINT = {
   ingestion: {
     step: 1,
@@ -904,6 +930,60 @@ ${JSON.stringify(sampleData || {}, null, 2)}`;
     }
     return res.status(500).json({ error: 'Could not generate story.' });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// /api/chart-summary — very short AI summary for a single chart card
+app.post('/api/chart-summary', async (req, res) => {
+  try {
+    const { chart, preview } = req.body || {};
+    if (!chart) return res.status(400).json({ error: 'Missing chart metadata.' });
+
+    const fallback = [
+      chart.yCol ? String(chart.yCol).replace(/_/g, ' ') : '',
+      chart.xCol ? `by ${String(chart.xCol).replace(/_/g, ' ')}` : ''
+    ].join(' ').trim() || 'Notable pattern detected';
+
+    const system = [
+      'You summarize one BI chart using the provided chart data.',
+      'Return exactly one plain-text sentence, 12 to 24 words.',
+      'No markdown, no bullets, no quotes, no label prefix.',
+      'Use simple business language that is easy to understand.',
+      'MUST include at least one numeric evidence point from preview data (for example %, start/end value, share, or r value).',
+      'Mention the relevant category or time labels when available.',
+      'Avoid repeating the chart title.'
+    ].join(' ');
+
+    const user = `Chart metadata: ${JSON.stringify(chart || {})}\nPreview points: ${JSON.stringify(preview || {})}`;
+
+    for (const model of MODEL_CANDIDATES) {
+      try {
+        const resp = await fetch(OPENAI_ENDPOINT, {
+          method: 'POST',
+          headers: openaiHeaders(),
+          body: JSON.stringify({
+            model,
+            max_tokens: 40,
+            temperature: 0.2,
+            top_p: 0.9,
+            seed: 42,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user }
+            ]
+          })
+        });
+
+        const data = await resp.json();
+        if (!resp.ok) continue;
+        const summary = normalizeChartSummary(parseOpenAIAnswer(data), fallback, chart);
+        if (summary) return res.json({ summary, model });
+      } catch (_) {}
+    }
+
+    return res.json({ summary: normalizeChartSummary('', fallback, chart), model: 'fallback' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
