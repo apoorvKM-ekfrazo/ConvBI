@@ -626,6 +626,151 @@ RULES:
 - time_column: prefer columns with semanticType='date'; null if none.
 - Return ONLY valid JSON. No markdown, no extra text.`;
 
+const KPI_RECOMMENDER_SYSTEM = `You are an expert BI analyst selecting the 5 most relevant KPI metrics across one or more tables.
+You will receive compact table summaries with numeric column stats.
+Return JSON only:
+{
+  "top_kpis": [
+    { "table": "table_name", "column": "numeric_column", "why": "short reason" }
+  ]
+}
+Rules:
+- Return at most 5 KPIs.
+- Choose actionable business metrics, not IDs/codes/index columns.
+- Prefer columns with meaningful variation, low null impact, and stable numeric coverage.
+- Prioritize business signals (sales, revenue, profit, margin, cost, amount, orders, units, rate).
+- Never invent table/column names.
+- Return ONLY valid JSON.`;
+
+function scoreKpiCandidate(candidate) {
+  const name = String(candidate?.column || '').toLowerCase();
+  const spread = Number(candidate?.spread || 0);
+  const nonZeroRatio = Number(candidate?.nonZeroRatio || 0);
+  const cv = Number(candidate?.cv || 0);
+  const sampleSize = Number(candidate?.sampleSize || 0);
+  const nullPct = Number(candidate?.nullPct || 0);
+
+  let score = 0;
+
+  if (/revenue|sales|profit|margin|amount|value|gmv|arr|mrr/.test(name)) score += 30;
+  if (/cost|expense|spend|price|income|orders?|units?|volume|quantity/.test(name)) score += 18;
+  if (/rate|ratio|pct|percentage|conversion|churn|retention/.test(name)) score += 12;
+  if (/(^|_)(id|key|code|zip|pin|index|idx)($|_)/.test(name)) score -= 25;
+
+  score += Math.min(18, spread > 0 ? Math.log10(Math.abs(spread) + 1) * 5 : 0);
+  score += Math.min(18, cv > 0 ? cv * 10 : 0);
+  score += Math.min(14, nonZeroRatio * 14);
+  score += Math.min(10, sampleSize >= 100 ? 10 : sampleSize * 0.1);
+  score -= Math.min(14, Math.max(0, nullPct) * 14);
+
+  return score;
+}
+
+function deterministicKpiRecommendations(candidates, limit = 5) {
+  return [...candidates]
+    .map(c => ({ ...c, _score: scoreKpiCandidate(c) }))
+    .sort((a, b) => b._score - a._score)
+    .slice(0, limit)
+    .map(({ table, column }) => ({ table, column, why: 'High business relevance and data quality.' }));
+}
+
+function buildKpiCandidateMap(inputTables) {
+  const candidates = [];
+  const byKey = new Map();
+
+  for (const table of inputTables) {
+    const tableName = String(table?.tableName || '').trim();
+    if (!tableName) continue;
+    const cols = Array.isArray(table?.numericColumns) ? table.numericColumns : [];
+    for (const col of cols) {
+      const colName = String(col?.column || '').trim();
+      if (!colName) continue;
+      const key = `${tableName}::${colName}`;
+      const normalized = {
+        table: tableName,
+        column: colName,
+        sampleSize: Number(col?.sampleSize || 0),
+        nullPct: Number(col?.nullPct || 0),
+        nonZeroRatio: Number(col?.nonZeroRatio || 0),
+        spread: Number(col?.spread || 0),
+        cv: Number(col?.cv || 0),
+        sum: Number(col?.sum || 0),
+        avg: Number(col?.avg || 0)
+      };
+      if (!byKey.has(key)) {
+        byKey.set(key, normalized);
+        candidates.push(normalized);
+      }
+    }
+  }
+
+  return { candidates, byKey };
+}
+
+// POST /api/recommend-kpis — AI + deterministic fallback KPI ranking
+app.post('/api/recommend-kpis', async (req, res) => {
+  try {
+    const tables = Array.isArray(req.body?.tables) ? req.body.tables : [];
+    if (!tables.length) return res.status(400).json({ error: 'Missing tables payload.' });
+
+    const { candidates, byKey } = buildKpiCandidateMap(tables);
+    if (!candidates.length) return res.json({ kpis: [], mode: 'empty' });
+
+    const fallback = deterministicKpiRecommendations(candidates, 5);
+    const compactTables = tables.map(t => ({
+      tableName: t.tableName,
+      rowCount: Number(t.rowCount || 0),
+      numericColumns: (Array.isArray(t.numericColumns) ? t.numericColumns : []).slice(0, 24)
+    }));
+
+    const aiOut = await requestViaProviderManager({
+      messages: [
+        { role: 'system', content: KPI_RECOMMENDER_SYSTEM },
+        { role: 'user', content: JSON.stringify({ tables: compactTables, limit: 5 }, null, 2) }
+      ],
+      max_tokens: 500,
+      temperature: 0,
+      top_p: 1,
+      seed: 42
+    });
+
+    if (!aiOut.ok) {
+      return res.json({ kpis: fallback, mode: 'fallback', attempted: aiOut.attempted || [] });
+    }
+
+    const parsed = extractJson(aiOut.text) || {};
+    const top = Array.isArray(parsed?.top_kpis) ? parsed.top_kpis : [];
+    const selected = [];
+    const seen = new Set();
+
+    for (const item of top) {
+      const table = String(item?.table || '').trim();
+      const column = String(item?.column || '').trim();
+      if (!table || !column) continue;
+      const key = `${table}::${column}`;
+      if (!byKey.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      selected.push({ table, column, why: String(item?.why || '').trim() || 'Selected by AI relevance scoring.' });
+      if (selected.length >= 5) break;
+    }
+
+    if (selected.length < 5) {
+      for (const f of fallback) {
+        const key = `${f.table}::${f.column}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        selected.push(f);
+        if (selected.length >= 5) break;
+      }
+    }
+
+    return res.json({ kpis: selected, mode: 'ai', provider: aiOut.provider, model: aiOut.model });
+  } catch (e) {
+    console.error('[/api/recommend-kpis] error:', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /api/interpret-table — LLM interprets column profiles
 app.post('/api/interpret-table', async (req, res) => {
   try {

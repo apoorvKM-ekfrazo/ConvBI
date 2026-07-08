@@ -1109,7 +1109,7 @@ async function loadDashboard() {
   workflowState.step2 = Object.values(loadedTables).some(t => Array.isArray(t.columns) && t.columns.length > 0);
   workflowState.step3 = hasBusinessSignals(samples);
 
-  renderKPIStrip(samples);
+  await renderKPIStrip(samples);
   renderRelationshipMap(names, relData);
   const [overviewCount, chartCount] = await Promise.all([
     renderSmartCharts(names, 'overviewCharts', 2, samples),
@@ -1159,57 +1159,188 @@ function renderSidebarSources(names) {
 }
 
 // ── KPI Strip ─────────────────────────────────────────────────────────────────
-function renderKPIStrip(samples) {
+function buildKPIRecommendationPayload(samples) {
+  const TYPE_CANDIDATES = ['INTEGER', 'BIGINT', 'DOUBLE', 'FLOAT', 'REAL', 'DECIMAL', 'NUMERIC'];
+  const tables = [];
+
+  for (const [tableName, d] of Object.entries(samples || {})) {
+    const rows = Array.isArray(d?.rows) ? d.rows : [];
+    const cols = Array.isArray(d?.columns) ? d.columns : [];
+    const numericColumns = [];
+
+    cols
+      .filter(c => TYPE_CANDIDATES.some(t => String(c?.type || '').toUpperCase().startsWith(t)))
+      .forEach(col => {
+        const raw = rows.map(r => r?.[col.name]);
+        const vals = raw.map(v => +v).filter(v => !isNaN(v));
+        if (!vals.length) return;
+
+        const sum = vals.reduce((a, b) => a + b, 0);
+        const avg = sum / vals.length;
+        const variance = vals.length > 1 ? vals.reduce((a, v) => a + Math.pow(v - avg, 2), 0) / vals.length : 0;
+        const std = Math.sqrt(variance);
+        const spread = Math.max(...vals) - Math.min(...vals);
+        const nonZeroRatio = vals.length ? vals.filter(v => v !== 0).length / vals.length : 0;
+        const nullCount = raw.length - vals.length;
+        const nullPct = raw.length ? nullCount / raw.length : 0;
+
+        numericColumns.push({
+          column: col.name,
+          sampleSize: vals.length,
+          nullPct: +nullPct.toFixed(4),
+          nonZeroRatio: +nonZeroRatio.toFixed(4),
+          spread: +spread.toFixed(4),
+          cv: avg ? +(Math.abs(std / avg)).toFixed(4) : 0,
+          sum: +sum.toFixed(4),
+          avg: +avg.toFixed(4)
+        });
+      });
+
+    tables.push({
+      tableName,
+      rowCount: d?.rowCount || rows.length || 0,
+      numericColumns
+    });
+  }
+
+  return { tables };
+}
+
+async function fetchAIKPIRecommendations(samples) {
+  try {
+    const payload = buildKPIRecommendationPayload(samples);
+    const res = await fetch(`${API}/api/recommend-kpis`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data?.kpis) ? data.kpis : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+async function renderKPIStrip(samples) {
   const el = document.getElementById('kpiStrip');
   if (!el) return;
 
-  const kpis = [];
+  const candidateKPIs = [];
   let totalRows = 0;
+
+  const TYPE_CANDIDATES = ['INTEGER', 'BIGINT', 'DOUBLE', 'FLOAT', 'REAL', 'DECIMAL', 'NUMERIC'];
+  const scoreNameRelevance = (rawName) => {
+    const name = String(rawName || '').toLowerCase();
+    let score = 0;
+
+    if (/revenue|sales|profit|margin|amount|value|gmv|arr|mrr/.test(name)) score += 28;
+    if (/cost|expense|spend|price|income|orders?|units?|volume|quantity/.test(name)) score += 18;
+    if (/count|total|sum/.test(name)) score += 10;
+    if (/rate|ratio|pct|percentage|conversion|churn|retention/.test(name)) score += 12;
+
+    // Penalize likely IDs/codes that are often not actionable KPIs.
+    if (/(^|_)(id|key|code|zip|pin|index|idx)($|_)/.test(name)) score -= 22;
+
+    return score;
+  };
+
+  const formatKPIValue = (colName, vals) => {
+    const name = String(colName || '');
+    const isPercent = /pct|percentage|%|rate|ratio|conversion|churn|retention/i.test(name);
+    const sum = vals.reduce((a, b) => a + b, 0);
+    const avg = sum / vals.length;
+
+    if (isPercent) {
+      // Keep percentage/rate KPIs on average to avoid inflated totals.
+      return `${avg.toFixed(1)}%`;
+    }
+    if (/total|sum|amount|sales|revenue|profit|cost|expense|spend|value|gmv|arr|mrr|orders?|units?|volume|quantity/i.test(name)) {
+      return Math.round(sum).toLocaleString();
+    }
+    return Math.round(avg).toLocaleString();
+  };
+
+  const computeTrend = vals => {
+    const half = Math.floor(vals.length / 2);
+    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const avg1 = half > 0 ? vals.slice(0, half).reduce((a, b) => a + b, 0) / half : avg;
+    const avg2 = vals.length - half > 0 ? vals.slice(half).reduce((a, b) => a + b, 0) / (vals.length - half) : avg;
+    const pct = avg1 ? ((avg2 - avg1) / Math.abs(avg1) * 100) : 0;
+    return {
+      pct,
+      dir: pct > 1 ? 'up' : pct < -1 ? 'down' : 'flat'
+    };
+  };
 
   for (const [name, d] of Object.entries(samples)) {
     totalRows += d.rowCount || d.rows?.length || 0;
     const numCols = (d.columns||[]).filter(c =>
-      ['INTEGER','BIGINT','DOUBLE','FLOAT','REAL'].some(t => (c.type||'').toUpperCase().startsWith(t)) &&
+      TYPE_CANDIDATES.some(t => (c.type||'').toUpperCase().startsWith(t)) &&
       !/date|time|start|end|month|week|year|quarter/i.test(c.name)  // Exclude all temporal columns
     );
-    numCols.slice(0, 2).forEach(col => {
+
+    numCols.forEach(col => {
       const vals = (d.rows||[]).map(r => +r[col.name]).filter(v => !isNaN(v));
       if (!vals.length) return;
-      const isPercent = /pct|percentage|%/i.test(col.name);
-      const sum = vals.reduce((a,b)=>a+b, 0);
-      const avg = sum / vals.length;
-      // trend: compare first half vs second half
-      const half = Math.floor(vals.length/2);
-      const avg1 = half > 0 ? vals.slice(0,half).reduce((a,b)=>a+b,0)/half : avg;
-      const avg2 = vals.length-half > 0 ? vals.slice(half).reduce((a,b)=>a+b,0)/(vals.length-half) : avg;
-      const pct  = avg1 ? ((avg2-avg1)/Math.abs(avg1)*100) : 0;
-      const dir  = pct > 1 ? 'up' : pct < -1 ? 'down' : 'flat';
-      // Format value: show average for rates/percentages, sum for totals
-      let displayValue;
-      if (isPercent) {
-        displayValue = avg.toFixed(1) + '%';
-      } else if (/total|sum|count/i.test(col.name)) {
-        displayValue = Math.round(sum).toLocaleString();
-      } else {
-        // For rates without units specified, show avg (e.g., daily rate)
-        displayValue = Math.round(avg).toLocaleString();
-      }
-      kpis.push({
+
+      const numericSpread = Math.max(...vals) - Math.min(...vals);
+      const nonZeroCount = vals.filter(v => v !== 0).length;
+      const nonZeroRatio = vals.length ? nonZeroCount / vals.length : 0;
+      const trend = computeTrend(vals);
+      const relevanceScore =
+        scoreNameRelevance(col.name) +
+        Math.min(20, numericSpread > 0 ? Math.log10(Math.abs(numericSpread) + 1) * 6 : 0) +
+        Math.min(15, nonZeroRatio * 15) +
+        Math.min(12, Math.abs(trend.pct) * 0.6) +
+        (vals.length >= 8 ? 10 : vals.length >= 4 ? 6 : 2);
+
+      candidateKPIs.push({
+        _key: `${name}::${col.name}`,
+        _rawColumn: col.name,
         label: col.name.replace(/_/g,' '),
-        value: displayValue,
-        trend: dir, pct: Math.abs(pct).toFixed(1), table: name
+        value: formatKPIValue(col.name, vals),
+        trend: trend.dir,
+        pct: Math.abs(trend.pct).toFixed(1),
+        table: name,
+        _score: relevanceScore
       });
     });
-    if (kpis.length >= 5) break;
   }
 
-  // Total records KPI
-  kpis.unshift({ label: 'Total Records', value: totalRows.toLocaleString(), trend: 'flat', pct: '0', table: 'all' });
+  const rankedFallback = candidateKPIs
+    .sort((a, b) => b._score - a._score)
+    .map(({ _score, ...k }) => k);
+
+  const aiRecommendations = await fetchAIKPIRecommendations(samples);
+  const byKey = new Map(rankedFallback.map(k => [k._key, k]));
+  const seen = new Set();
+  const topKPIs = [];
+
+  aiRecommendations.forEach(item => {
+    const key = `${item?.table || ''}::${item?.column || ''}`;
+    const match = byKey.get(key);
+    if (!match || seen.has(key) || topKPIs.length >= 5) return;
+    seen.add(key);
+    topKPIs.push(match);
+  });
+
+  rankedFallback.forEach(k => {
+    if (topKPIs.length >= 5) return;
+    if (seen.has(k._key)) return;
+    seen.add(k._key);
+    topKPIs.push(k);
+  });
+
+  // Fallback if dataset has too few numeric metrics.
+  if (!topKPIs.length || topKPIs.length < 5) {
+    topKPIs.unshift({ label: 'Total Records', value: totalRows.toLocaleString(), trend: 'flat', pct: '0', table: 'all' });
+  }
 
   const arrowMap = { up: '▲', down: '▼', flat: '→' };
   const clsMap   = { up: 'kpi-trend-up', down: 'kpi-trend-down', flat: 'kpi-trend-flat' };
 
-  el.innerHTML = kpis.slice(0, 5).map(k => `
+  el.innerHTML = topKPIs.slice(0, 5).map(k => `
     <div class="kpi-card" onclick="filterByKPI('${escapeHtml(k.label)}')">
       <div class="kpi-label">${escapeHtml(k.label)}</div>
       <div class="kpi-value">${escapeHtml(k.value)}</div>
