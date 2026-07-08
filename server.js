@@ -931,8 +931,9 @@ CRITICAL RULES:
 1. Never fabricate values. Use only provided result rows.
 2. Never dump raw rows; summarize clearly for executives.
 3. Keep each section concise and action-oriented.
-4. If no rows matched, say it clearly and provide a practical next action.
-5. Treat zero as valid data, not missing data.
+4. In DIRECT_ANSWER, begin with the exact answer to the user's question in one sentence.
+5. If no rows matched, say it clearly and provide a practical next action.
+6. Treat zero as valid data, not missing data.
 
 Return EXACTLY six sections with these markers, each on its own line:
 
@@ -955,6 +956,35 @@ Return EXACTLY six sections with these markers, each on its own line:
 2-4 short bullet points with specific actions and monitoring suggestions.
 
 Return plain text only. Do not include markdown code fences.`;
+
+function buildFollowupSuggestionsFallback(question, sections, decodedIntent) {
+  const q = String(question || '').toLowerCase();
+  const answer = String(sections?.DIRECT_ANSWER || sections?.directAnswer || sections?.summary || '').toLowerCase();
+  const suggestions = [];
+
+  if (/total|sum|count|average|avg|max|min/.test(q)) {
+    suggestions.push('Can you break this result down by the top categories?');
+    suggestions.push('How does this metric compare with the previous period?');
+  }
+  if (/trend|forecast|next|growth|decline|increase|decrease/.test(q + ' ' + answer)) {
+    suggestions.push('What is the projected value for the next 3 periods?');
+    suggestions.push('Which factors are most associated with this trend?');
+  }
+  if (/region|country|state|city|zone/.test(q + ' ' + answer)) {
+    suggestions.push('Which region contributes most to this result and why?');
+  }
+  if (/product|segment|customer|channel/.test(q + ' ' + answer)) {
+    suggestions.push('Which product or customer segment drives the biggest impact?');
+  }
+  if (decodedIntent?.time_period && decodedIntent.time_period !== 'all_time') {
+    suggestions.push('Show the same analysis for the immediately previous time period.');
+  }
+
+  suggestions.push('What is the most important business action from this result?');
+  suggestions.push('Show the top 5 contributors behind this answer.');
+
+  return Array.from(new Set(suggestions.map(s => String(s).trim()).filter(Boolean))).slice(0, 6);
+}
 
 app.post('/api/interpret', async (req, res) => {
   try {
@@ -1011,6 +1041,63 @@ app.post('/api/interpret', async (req, res) => {
     answer = renderLewSections(parseLewSectionsText(answer));
     return res.json({ answer, model: out.model, provider: out.provider });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/followup-suggestions', async (req, res) => {
+  try {
+    const { question, sections, decodedIntent, rowsPreview } = req.body || {};
+    if (!question) return res.status(400).json({ error: 'Missing question.' });
+
+    const fallbackSuggestions = buildFollowupSuggestionsFallback(question, sections || {}, decodedIntent || {});
+
+    const system = [
+      'You are a BI copilot generating follow-up questions for the next user turn.',
+      'Use the original question and answer context.',
+      'Return ONLY valid JSON with this shape: {"suggestions":["...","..."]}.',
+      'Generate 4 to 6 concise follow-up questions.',
+      'Each suggestion must be answerable from business data and deepen analysis.',
+      'Do not repeat the original question.'
+    ].join(' ');
+
+    const user = [
+      `Original Question: ${question}`,
+      `Answer Sections: ${JSON.stringify(sections || {}, null, 2)}`,
+      `Decoded Intent: ${JSON.stringify(decodedIntent || {}, null, 2)}`,
+      `Rows Preview: ${JSON.stringify((rowsPreview || []).slice(0, 20), null, 2)}`
+    ].join('\n\n');
+
+    const out = await requestViaProviderManager({
+      max_tokens: 260,
+      temperature: 0.2,
+      top_p: 0.9,
+      seed: 42,
+      preferComplex: false,
+      openaiModels: MODEL_CANDIDATES,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user }
+      ]
+    });
+
+    if (out.ok) {
+      const parsed = extractJson(out.text || '');
+      const suggestions = Array.isArray(parsed?.suggestions)
+        ? parsed.suggestions.map(s => String(s || '').trim()).filter(Boolean)
+        : [];
+      if (suggestions.length) {
+        return res.json({
+          suggestions: Array.from(new Set(suggestions)).slice(0, 6),
+          provider: out.provider,
+          model: out.model
+        });
+      }
+    }
+
+    return res.json({ suggestions: fallbackSuggestions, model: out.ok ? out.model : 'fallback-local' });
+  } catch (e) {
+    const fallbackSuggestions = buildFollowupSuggestionsFallback(req.body?.question || '', req.body?.sections || {}, req.body?.decodedIntent || {});
+    return res.json({ suggestions: fallbackSuggestions, model: 'fallback-local' });
+  }
 });
 
 // /api/generate-executive-summary — concise executive summary from recent answers

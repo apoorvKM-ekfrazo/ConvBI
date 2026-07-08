@@ -75,34 +75,70 @@ function setWorkflowRuntime(step, detail) {
   box.innerHTML = `<strong>Step ${step}: ${escapeHtml(title)}</strong>${suffix}`;
 }
 
-function buildFollowupSuggestions(question, decoded) {
+function buildFollowupSuggestionsFallback(question, decoded, sections) {
   const q = String(question || '').toLowerCase();
-  const suggestions = [
-    'Explain further',
-    'Compare another period',
-    'Filter by Region',
-    'Show only Electronics',
-    'Forecast next six months',
-    'Drill down into customers',
-    'Refresh Dashboard'
-  ];
+  const direct = String(sections?.directAnswer || sections?.summary || '').toLowerCase();
+  const suggestions = [];
+
+  if (/total|sum|count|average|avg|max|min/.test(q)) {
+    suggestions.push('Can you break this down by category?');
+    suggestions.push('How does this compare with the previous period?');
+  }
+  if (/region|country|state|city|zone/.test(q + ' ' + direct)) {
+    suggestions.push('Which region contributes the most to this result?');
+  }
+  if (/product|segment|customer|channel/.test(q + ' ' + direct)) {
+    suggestions.push('Which product or segment is driving this outcome?');
+  }
+  if (/increase|decrease|decline|growth|trend|forecast/.test(q + ' ' + direct)) {
+    suggestions.push('What is the likely trend for the next 3 periods?');
+    suggestions.push('What factors are most correlated with this trend?');
+  }
 
   if (decoded?.time_period && decoded.time_period !== 'all_time') {
-    suggestions.unshift('Compare with previous period');
+    suggestions.push('Compare with the previous period using the same filter.');
   }
   if (/forecast|next quarter|next month|next six|prediction/.test(q)) {
-    suggestions.unshift('Show forecast confidence range');
+    suggestions.push('Show the forecast confidence range.');
   }
-  return Array.from(new Set(suggestions)).slice(0, 8);
+
+  suggestions.push('What should be the top business action from this result?');
+  suggestions.push('Show the top 5 contributors to this answer.');
+
+  return Array.from(new Set(suggestions)).slice(0, 6);
 }
 
-function renderFollowupRail(question, decoded) {
+async function fetchFollowupSuggestions(question, decoded, sections, rowsPreview) {
+  try {
+    const res = await fetch(`${API}/api/followup-suggestions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        sections,
+        decodedIntent: decoded || null,
+        rowsPreview: (rowsPreview || []).slice(0, 20)
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not generate follow-up suggestions.');
+    const prompts = Array.isArray(data.suggestions) ? data.suggestions : [];
+    if (!prompts.length) {
+      return buildFollowupSuggestionsFallback(question, decoded, sections);
+    }
+    return prompts.slice(0, 6);
+  } catch (_) {
+    return buildFollowupSuggestionsFallback(question, decoded, sections);
+  }
+}
+
+async function renderFollowupRail(question, decoded, sections, rowsPreview) {
   const rail = document.getElementById('followupRail');
   if (!rail) return;
-  const prompts = buildFollowupSuggestions(question, decoded);
+  const prompts = await fetchFollowupSuggestions(question, decoded, sections, rowsPreview);
   rail.style.display = '';
   rail.innerHTML = `
-    <div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--t3);margin-bottom:8px">Step 10: Conversational Follow-up</div>
+    <div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--t3);margin-bottom:8px">Suggested Follow-up Questions</div>
     <div style="display:flex;gap:7px;flex-wrap:wrap">${prompts.map(p => `<button class="chip" onclick="runFollowupPrompt('${escapeHtml(p)}')">${escapeHtml(p)}</button>`).join('')}</div>`;
 }
 
@@ -462,7 +498,7 @@ async function askQuestion() {
       const sections = parseInterpretSections(c.answer || '');
       renderAnswerCard(q, sections, c.sql || '', c.decoded || null, { rows: c.rows || [], columns: c.columns || [] }, allTableSchemas, true);
       setWorkflowRuntime(9, 'Context-aware storytelling restored from cache.');
-      renderFollowupRail(q, c.decoded || {});
+      await renderFollowupRail(q, c.decoded || {}, sections, c.rows || []);
       setWorkflowRuntime(11, 'Decision support reused from cached analytical result.');
       if (voiceMgr?.speakText && c.answer) voiceMgr.speakText(sections.directAnswer || sections.summary || '');
       saveToHistory(q, sections.directAnswer || sections.summary || '', c.sql || '');
@@ -529,7 +565,7 @@ async function askQuestion() {
       if (execData.error) { sqlError = execData.error; continue; }
 
       // 5. Narrate
-      setWorkflowRuntime(9, 'Preparing 6-part context-aware business storytelling.');
+      setWorkflowRuntime(9, 'Preparing direct answer with concise evidence.');
       updateThinking(thinkingId, 'Step 9/11 · Writing business narrative…');
       const allRows = execData.rows || [];
       // Cap rows sent to LLM to avoid token overuse — 30 rows is enough to narrate
@@ -566,7 +602,7 @@ async function askQuestion() {
       const sections = parseInterpretSections(answerText);
       renderAnswerCard(q, sections, sql, decoded, execData, allTableSchemas);
       setWorkflowRuntime(10, 'Follow-up prompts are ready for deeper exploration.');
-      renderFollowupRail(q, decoded || {});
+      await renderFollowupRail(q, decoded || {}, sections, allRows);
       setWorkflowRuntime(11, 'Decision support generated with recommendations and impacts.');
 
       // Save to history
@@ -726,6 +762,38 @@ function renderAnswerCard(question, sections, sql, decoded, execData, schemas, f
     rowsPreview: (execData?.rows || []).slice(0, 20)
   };
 
+  const hasUsefulText = value => {
+    const v = String(value || '').trim();
+    if (!v) return false;
+    return !/^not available\.?$/i.test(v);
+  };
+
+  const hasExplanation = !!(
+    hasUsefulText(sections.whatHappened) ||
+    hasUsefulText(sections.whyHappened) ||
+    hasUsefulText(sections.supportingEvidence) ||
+    hasUsefulText(sections.businessImpact) ||
+    hasUsefulText(sections.recommendedAction)
+  );
+
+  const explanationHtml = hasExplanation
+    ? `
+      <details class="answer-approach-detail" style="margin-top:10px">
+        <summary class="approach-toggle">Explain this answer</summary>
+        <div class="approach-body" style="margin-top:10px">
+          ${hasUsefulText(sections.whatHappened) ? `<div class="answer-insight"><strong>What happened:</strong> ${escapeHtml(sections.whatHappened)}</div>` : ''}
+          ${hasUsefulText(sections.whyHappened) ? `<div class="answer-insight"><strong>Why:</strong> ${escapeHtml(sections.whyHappened)}</div>` : ''}
+          ${hasUsefulText(sections.supportingEvidence) ? `<div class="answer-insight"><strong>Evidence:</strong><br/>${escapeHtml(sections.supportingEvidence).replace(/\n/g,'<br/>')}</div>` : ''}
+          ${hasUsefulText(sections.businessImpact) ? `<div class="answer-insight"><strong>Business impact:</strong> ${escapeHtml(sections.businessImpact)}</div>` : ''}
+          ${hasUsefulText(sections.recommendedAction) ? `<div class="answer-insight"><strong>Recommended action:</strong><br/>${escapeHtml(sections.recommendedAction).replace(/\n/g,'<br/>')}</div>` : ''}
+        </div>
+      </details>`
+    : '';
+
+  const decisionSupportLine = hasUsefulText(sections.recommendedAction)
+    ? String(sections.recommendedAction).split(/\r?\n/).find(Boolean)
+    : '';
+
   div.innerHTML = `
     <div class="msg-bubble answer-card" id="${cardId}">
       <div class="answer-meta">
@@ -733,12 +801,8 @@ function renderAnswerCard(question, sections, sql, decoded, execData, schemas, f
         ${fromCache ? '<span class="cached-badge">&#9889; cached</span>' : ''}
         ${joinInfo}
       </div>
-      <div class="answer-summary"><strong>1) Direct Answer:</strong> ${escapeHtml(sections.directAnswer || sections.summary || '')}</div>
-      <div class="answer-insight"><strong>2) What Happened:</strong> ${escapeHtml(sections.whatHappened || 'Not available')}</div>
-      <div class="answer-insight"><strong>3) Why It Happened:</strong> ${escapeHtml(sections.whyHappened || 'Not available')}</div>
-      <div class="answer-insight"><strong>4) Supporting Evidence:</strong><br/>${escapeHtml(sections.supportingEvidence || 'Not available').replace(/\n/g,'<br/>')}</div>
-      <div class="answer-insight"><strong>5) Business Impact:</strong> ${escapeHtml(sections.businessImpact || 'Not available')}</div>
-      <div class="answer-insight"><strong>6) Recommended Action:</strong><br/>${escapeHtml(sections.recommendedAction || 'Not available').replace(/\n/g,'<br/>')}</div>
+      <div class="answer-summary"><strong>Answer:</strong> ${escapeHtml(sections.directAnswer || sections.summary || '')}</div>
+      ${explanationHtml}
       ${chartHtml}
       <details class="answer-approach-detail">
         <summary class="approach-toggle">How this was solved</summary>
@@ -757,7 +821,7 @@ function renderAnswerCard(question, sections, sql, decoded, execData, schemas, f
         <button class="action-btn" onclick="exportAnswerReport('${cardId}')">Export Report</button>
         <button class="action-btn" onclick="generateExecutiveSummary('${cardId}')">Executive Summary</button>
       </div>
-      <div class="answer-insight" style="margin-top:10px"><strong>Decision Support:</strong> Prioritize recommended actions by business impact, then monitor KPI trend and risk weekly.</div>
+      ${decisionSupportLine ? `<div class="answer-insight" style="margin-top:10px"><strong>Decision support:</strong> ${escapeHtml(decisionSupportLine)}</div>` : ''}
     </div>`;
 
   msgs.appendChild(div);
@@ -888,15 +952,7 @@ function saveToHistory(q, summary, sql) {
 
 function hasLewSections(text) {
   if (!text) return false;
-  const tags = [
-    '##DIRECT_ANSWER##',
-    '##WHAT_HAPPENED##',
-    '##WHY_HAPPENED##',
-    '##SUPPORTING_EVIDENCE##',
-    '##BUSINESS_IMPACT##',
-    '##RECOMMENDED_ACTION##'
-  ];
-  return tags.every(t => String(text).includes(t));
+  return String(text).includes('##DIRECT_ANSWER##');
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
