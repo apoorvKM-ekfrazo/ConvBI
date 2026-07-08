@@ -169,20 +169,129 @@ function exportChartImage(chartId, title) {
   }
 
   try {
-    const dataUrl = chart.getDataURL({
+    const card = el.closest('.db-chart-card');
+    if (!card) {
+      alert('Chart card container is missing.');
+      return;
+    }
+
+    const titleEl = card.querySelector('.db-chart-card-title');
+    const subEl = card.querySelector('.db-chart-card-sub');
+    const summaryEl = card.querySelector('.db-chart-summary');
+
+    const titleText = String(titleEl?.textContent || title || 'Chart').trim();
+    const subText = String(subEl?.textContent || '').trim();
+    const summaryText = String(summaryEl?.textContent || '').trim();
+
+    const chartUrl = chart.getDataURL({
       type: 'png',
       pixelRatio: 2,
       backgroundColor: '#FFFFFF'
     });
-    const safe = String(title || 'chart')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '_')
-      .replace(/^_+|_+$/g, '')
-      .slice(0, 64) || 'chart';
-    const a = document.createElement('a');
-    a.href = dataUrl;
-    a.download = `${safe}.png`;
-    a.click();
+
+    const cardRect = card.getBoundingClientRect();
+    const chartRect = el.getBoundingClientRect();
+    const chartOffsetTop = Math.max(0, chartRect.top - cardRect.top);
+    const chartOffsetLeft = Math.max(0, chartRect.left - cardRect.left);
+    const scale = 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(cardRect.width * scale));
+    canvas.height = Math.max(1, Math.round(cardRect.height * scale));
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      alert('Could not create export canvas.');
+      return;
+    }
+
+    ctx.scale(scale, scale);
+
+    const styles = getComputedStyle(card);
+    const bgColor = styles.backgroundColor || '#FFFFFF';
+    const borderColor = styles.borderColor || '#E5E7EB';
+
+    // Draw card background/border first so non-chart content is part of the exported image.
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(0, 0, cardRect.width, cardRect.height);
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, 0.5, cardRect.width - 1, cardRect.height - 1);
+
+    const image = new Image();
+    image.onload = () => {
+      try {
+        ctx.drawImage(image, chartOffsetLeft, chartOffsetTop, chartRect.width, chartRect.height);
+
+        const wrapText = (text, x, y, maxWidth, lineHeight, maxLines, color, font, weight = 'normal') => {
+          if (!text) return y;
+          ctx.fillStyle = color;
+          ctx.font = `${weight} ${font}`;
+          const words = text.split(/\s+/).filter(Boolean);
+          let line = '';
+          let lines = 0;
+          for (let i = 0; i < words.length; i++) {
+            const candidate = line ? `${line} ${words[i]}` : words[i];
+            if (ctx.measureText(candidate).width > maxWidth && line) {
+              ctx.fillText(line, x, y);
+              y += lineHeight;
+              lines += 1;
+              line = words[i];
+              if (lines >= maxLines) {
+                const clipped = line.length > 3 ? `${line.slice(0, Math.max(0, line.length - 3))}...` : `${line}...`;
+                ctx.fillText(clipped, x, y - lineHeight + Math.min(lineHeight, 2));
+                return y;
+              }
+            } else {
+              line = candidate;
+            }
+          }
+          if (line && lines < maxLines) {
+            ctx.fillText(line, x, y);
+            y += lineHeight;
+          }
+          return y;
+        };
+
+        const leftPad = 20;
+        const topPad = 34;
+        const textWidth = Math.max(160, cardRect.width - leftPad * 2 - 10);
+
+        // Overlay card heading/subheading text so exported PNG includes full context.
+        let y = topPad;
+        y = wrapText(titleText, leftPad, y, textWidth, 18, 2, '#111827', '600 13px Inter, sans-serif');
+        wrapText(subText, leftPad, y + 2, textWidth, 14, 2, '#6B7280', '11px Inter, sans-serif');
+
+        if (summaryText) {
+          const dividerY = Math.max(chartOffsetTop + chartRect.height + 10, cardRect.height - 52);
+          ctx.strokeStyle = '#E5E7EB';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(leftPad, dividerY);
+          ctx.lineTo(cardRect.width - leftPad, dividerY);
+          ctx.stroke();
+          wrapText(summaryText, leftPad, dividerY + 16, textWidth, 14, 4, '#4B5563', '12px Inter, sans-serif');
+        }
+
+        const dataUrl = canvas.toDataURL('image/png');
+        const safe = String(title || titleText || 'chart')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '_')
+          .replace(/^_+|_+$/g, '')
+          .slice(0, 64) || 'chart';
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = `${safe}.png`;
+        a.click();
+      } catch (_) {
+        alert('Could not export this chart card image.');
+      }
+    };
+
+    image.onerror = () => {
+      alert('Could not render chart image for export.');
+    };
+
+    image.src = chartUrl;
   } catch (_) {
     alert('Could not export this chart image.');
   }
