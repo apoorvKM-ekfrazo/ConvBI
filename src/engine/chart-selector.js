@@ -103,12 +103,12 @@ async function _scoreCandidate(candidate, tableName, columns, rowCount, primaryM
 
   try {
     if (type === 'bar' || type === 'donut') {
-      const r = await executeSQL(
+      const sql =
         `SELECT "${xCol}" AS grp, AVG("${yCol}") AS avg_val
          FROM "${tableName}"
          WHERE "${xCol}" IS NOT NULL AND "${yCol}" IS NOT NULL
-         GROUP BY "${xCol}" ORDER BY avg_val DESC`
-      );
+         GROUP BY "${xCol}" ORDER BY avg_val DESC`;
+      const r = await executeSQL(sql);
       const rows   = r.rows || [];
       const vals   = rows.map(row => Number(row.avg_val)).filter(v => Number.isFinite(v));
       const labels = rows.map(row => String(row.grp));
@@ -135,12 +135,12 @@ async function _scoreCandidate(candidate, tableName, columns, rowCount, primaryM
         : _barOption(labels, vals, candidate);
 
     } else if (type === 'line') {
-      const r = await executeSQL(
+      const sql =
         `SELECT CAST("${xCol}" AS VARCHAR) AS period, AVG("${yCol}") AS avg_val
          FROM "${tableName}"
          WHERE "${xCol}" IS NOT NULL AND "${yCol}" IS NOT NULL
-         GROUP BY "${xCol}" ORDER BY "${xCol}"`
-      );
+         GROUP BY "${xCol}" ORDER BY "${xCol}"`;
+      const r = await executeSQL(sql);
       const rows   = r.rows || [];
       const vals   = rows.map(row => Number(row.avg_val)).filter(v => Number.isFinite(v));
       const labels = rows.map(row => String(row.period));
@@ -163,10 +163,10 @@ async function _scoreCandidate(candidate, tableName, columns, rowCount, primaryM
       option = _lineOption(labels, vals, candidate);
 
     } else if (type === 'scatter') {
-      const r = await executeSQL(
+      const sql =
         `SELECT "${xCol}" AS x, "${yCol}" AS y FROM "${tableName}"
-         WHERE "${xCol}" IS NOT NULL AND "${yCol}" IS NOT NULL LIMIT 500`
-      );
+         WHERE "${xCol}" IS NOT NULL AND "${yCol}" IS NOT NULL LIMIT 500`;
+      const r = await executeSQL(sql);
       const pts = (r.rows || [])
         .map(row => [Number(row.x), Number(row.y)])
         .filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y));

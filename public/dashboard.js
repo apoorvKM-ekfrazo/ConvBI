@@ -7,6 +7,7 @@ let chartRegistry   = {};    // chartId -> echarts instance
 let chartMetaById   = {};    // chartId -> conversion state and source option
 let pendingCharts   = [];    // {id, option} waiting for their section to become visible
 let sidebarOpen     = true;
+let sourceModalState = { chartId: '', activeTab: 'sql' };
 
 const CHART_TYPE_SEQUENCE = ['auto', 'bar', 'hbar', 'line', 'area', 'donut', 'rose', 'scatter'];
 const CHART_PREFS_KEY = 'convbi_chart_type_prefs_v1';
@@ -28,6 +29,19 @@ function _chartTypeLabel(type) {
     rose: 'Rose Donut',
     scatter: 'Scatter'
   })[type] || 'Default';
+}
+
+function _builderNameForType(type) {
+  return ({
+    auto: 'auto-selected',
+    bar: 'buildBarOption',
+    hbar: 'buildHorizontalBarOption',
+    line: 'buildLineOption',
+    area: 'buildAreaOption',
+    donut: 'buildDonutOption',
+    rose: 'buildRoseOption',
+    scatter: 'buildScatterOption'
+  })[type] || 'unknown-builder';
 }
 
 function _availableChartTypes(originalType) {
@@ -441,6 +455,192 @@ function _chartPreferenceKey(title = '', meta = {}) {
   return parts.join('|') || norm(title || 'chart');
 }
 
+function _sourceMeta(sourceMeta, selectedType, option) {
+  const source = sourceMeta && typeof sourceMeta === 'object' ? sourceMeta : {};
+  return {
+    sql: String(source.sql || '').trim(),
+    jsBuilder: String(source.jsBuilder || _builderNameForType(selectedType || 'auto')),
+    origin: String(source.origin || 'dashboard'),
+    note: String(source.note || ''),
+    option
+  };
+}
+
+async function fetchChartSource(chartId) {
+  const state = chartMetaById[chartId];
+  if (!state || state.sourceLoaded || state.sourceLoading) return;
+
+  const meta = state.summaryMeta || {};
+  if (!meta.tableName || !meta.xCol || !meta.yCol || !state.originalType) {
+    state.originalSource = _sourceMeta({
+      sql: '',
+      jsBuilder: _builderNameForType(state.originalType || 'auto'),
+      origin: 'chart-source',
+      note: 'SQL is not available for this visual.'
+    }, 'auto', state.originalOption);
+    state.sourceLoaded = true;
+    state.sourceError = '';
+    if (state.currentType === 'auto') state.currentSource = state.originalSource;
+    return;
+  }
+
+  state.sourceLoading = true;
+  state.sourceError = '';
+  if (sourceModalState.chartId === chartId) renderSourceModal();
+
+  try {
+    const res = await fetch(`${API}/api/chart-source`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tableName: meta.tableName,
+        type: state.originalType,
+        xCol: meta.xCol,
+        yCol: meta.yCol
+      })
+    });
+    const raw = await res.text();
+    let data = null;
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch (_) {
+      const looksHtml = /^\s*</.test(raw || '');
+      if (looksHtml) {
+        throw new Error('Source endpoint returned HTML instead of JSON. Restart backend and verify /api/chart-source route.');
+      }
+      throw new Error('Source endpoint returned invalid JSON.');
+    }
+    if (!res.ok) throw new Error(data?.error || `Failed to load source (HTTP ${res.status}).`);
+
+    state.originalSource = _sourceMeta(data, 'auto', state.originalOption);
+    state.sourceLoaded = true;
+    if (state.currentType === 'auto') {
+      state.currentSource = state.originalSource;
+    } else if (state.currentSource) {
+      state.currentSource.sql = state.originalSource.sql;
+    }
+  } catch (e) {
+    state.sourceError = String(e?.message || 'Could not load source.');
+  } finally {
+    state.sourceLoading = false;
+    if (sourceModalState.chartId === chartId) renderSourceModal();
+  }
+}
+
+function ensureSourceModal() {
+  if (document.getElementById('dbSourceModal')) return;
+  const modal = document.createElement('div');
+  modal.id = 'dbSourceModal';
+  modal.className = 'db-source-modal';
+  modal.innerHTML = `
+    <div class="db-source-backdrop" data-close="1"></div>
+    <div class="db-source-dialog" role="dialog" aria-modal="true" aria-labelledby="dbSourceTitle">
+      <div class="db-source-head">
+        <div>
+          <div class="db-source-title" id="dbSourceTitle">Chart Source</div>
+          <div class="db-source-meta" id="dbSourceMeta"></div>
+        </div>
+        <button class="db-source-close" id="dbSourceClose" type="button" aria-label="Close source viewer">×</button>
+      </div>
+      <div class="db-source-tabs">
+        <button class="db-source-tab active" data-tab="sql" type="button">SQL</button>
+        <button class="db-source-tab" data-tab="js" type="button">JS</button>
+        <button class="db-source-copy" id="dbSourceCopy" type="button">Copy</button>
+      </div>
+      <pre class="db-source-code" id="dbSourceCode"></pre>
+    </div>`;
+  document.body.appendChild(modal);
+
+  modal.addEventListener('click', e => {
+    if (e.target?.dataset?.close === '1') closeSourceModal();
+  });
+  document.getElementById('dbSourceClose')?.addEventListener('click', closeSourceModal);
+  document.querySelectorAll('.db-source-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      sourceModalState.activeTab = btn.dataset.tab || 'sql';
+      renderSourceModal();
+    });
+  });
+  document.getElementById('dbSourceCopy')?.addEventListener('click', copySourceFromModal);
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && modal.classList.contains('open')) closeSourceModal();
+  });
+}
+
+function sourceModalContent(state, tab) {
+  if (!state) return 'No source metadata available.';
+  if (tab === 'sql' && state.sourceLoading) return 'Loading SQL source...';
+  if (tab === 'sql' && state.sourceError) return `-- ${state.sourceError}`;
+  const src = state.currentSource || _sourceMeta({}, state.currentType, state.currentOption);
+
+  if (tab === 'sql') {
+    if (src.sql) return src.sql;
+    return '-- SQL is not available for this chart (client-side generated or transformed visual).';
+  }
+
+  const jsPayload = {
+    chartType: state.currentType,
+    builder: src.jsBuilder || _builderNameForType(state.currentType),
+    origin: src.origin || 'dashboard',
+    note: src.note || '',
+    option: state.currentOption || state.originalOption
+  };
+  return JSON.stringify(jsPayload, null, 2);
+}
+
+function renderSourceModal() {
+  const modal = document.getElementById('dbSourceModal');
+  if (!modal) return;
+  const state = chartMetaById[sourceModalState.chartId];
+  const title = String(state?.summaryMeta?.title || 'Chart Source');
+  const tab = sourceModalState.activeTab || 'sql';
+
+  const metaEl = document.getElementById('dbSourceMeta');
+  if (metaEl) {
+    const tableName = String(state?.summaryMeta?.tableName || '').trim();
+    const chartType = _chartTypeLabel(state?.currentType || 'auto');
+    metaEl.textContent = tableName ? `${tableName} · ${chartType}` : chartType;
+  }
+
+  const titleEl = document.getElementById('dbSourceTitle');
+  if (titleEl) titleEl.textContent = `${title} - Source`;
+
+  document.querySelectorAll('.db-source-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+
+  const codeEl = document.getElementById('dbSourceCode');
+  if (codeEl) codeEl.textContent = sourceModalContent(state, tab);
+}
+
+async function openSourceModal(chartId, tab = 'sql') {
+  ensureSourceModal();
+  sourceModalState.chartId = chartId;
+  sourceModalState.activeTab = tab;
+  const modal = document.getElementById('dbSourceModal');
+  if (!modal) return;
+  modal.classList.add('open');
+  renderSourceModal();
+  await fetchChartSource(chartId);
+}
+
+function closeSourceModal() {
+  const modal = document.getElementById('dbSourceModal');
+  if (!modal) return;
+  modal.classList.remove('open');
+}
+
+async function copySourceFromModal() {
+  const text = sourceModalContent(chartMetaById[sourceModalState.chartId], sourceModalState.activeTab);
+  try {
+    await navigator.clipboard.writeText(text);
+    alert('Source copied.');
+  } catch (_) {
+    alert('Could not copy source.');
+  }
+}
+
 function _extractConvertibleSeries(option = {}) {
   const series = Array.isArray(option.series) ? option.series : [];
   const first = series[0] || {};
@@ -641,6 +841,7 @@ function handleChartTypeChange(chartId, selectedType) {
     const applied = applyChartOption(chartId, state.originalOption);
     if (!applied) return;
     state.currentOption = state.originalOption;
+    state.currentSource = _sourceMeta(state.originalSource, 'auto', state.originalOption);
     state.currentType = 'auto';
     _syncChartTypeControls(state, 'auto');
     _setChartTypePreference(state.prefKey, 'auto');
@@ -663,6 +864,11 @@ function handleChartTypeChange(chartId, selectedType) {
   }
 
   state.currentOption = result.option;
+  state.currentSource = _sourceMeta({
+    sql: state.originalSource?.sql || '',
+    origin: 'converted',
+    note: 'SQL remains from the original chart; visual transformed in browser.'
+  }, selectedType, result.option);
   state.currentType = selectedType;
   _syncChartTypeControls(state, selectedType);
   _setChartTypePreference(state.prefKey, selectedType);
@@ -763,6 +969,7 @@ async function fillChartSummary(summaryId, meta, option) {
 function buildChartCard({ container, chartId, title, sub, option, summaryMeta, delayIndex }) {
   const summaryId = `${chartId}_summary`;
   const exportId = `${chartId}_export`;
+  const sourceId = `${chartId}_source`;
   const convertId = `${chartId}_convert`;
   const cycleId = `${chartId}_cycle`;
   const noteId = `${chartId}_convert_note`;
@@ -789,6 +996,7 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
         <select class="db-chart-type-select" id="${convertId}" aria-label="Convert chart type">
           ${selectOptions}
         </select>
+        <button class="db-chart-export-btn" id="${sourceId}" type="button">Source</button>
         <button class="db-chart-export-btn" id="${exportId}" type="button">Export Image</button>
       </div>
     </div>
@@ -803,9 +1011,18 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
     exportBtn.addEventListener('click', () => exportChartImage(chartId, title));
   }
 
+  const sourceBtn = document.getElementById(sourceId);
+  if (sourceBtn) {
+    sourceBtn.addEventListener('click', () => openSourceModal(chartId, 'sql'));
+  }
+
+  const originalSource = _sourceMeta({}, 'auto', option);
+
   chartMetaById[chartId] = {
     originalOption: option,
     currentOption: option,
+    originalSource,
+    currentSource: originalSource,
     currentType: 'auto',
     originalType,
     summaryMeta,
@@ -813,7 +1030,10 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
     convertId,
     noteId,
     prefKey,
-    availableTypes
+    availableTypes,
+    sourceLoading: false,
+    sourceLoaded: false,
+    sourceError: ''
   };
 
   const convertEl = document.getElementById(convertId);
@@ -860,6 +1080,8 @@ async function loadDashboard() {
   chartRegistry = {};
   chartMetaById = {};
   pendingCharts = [];
+  sourceModalState = { chartId: '', activeTab: 'sql' };
+  closeSourceModal();
 
   try {
     const res  = await fetch(`${API}/api/tables`);

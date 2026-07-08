@@ -713,6 +713,84 @@ app.get('/api/charts/:tableName', async (req, res) => {
   }
 });
 
+function dq(name) {
+  return `"${String(name || '').replace(/"/g, '""')}"`;
+}
+
+function buildChartSourceMeta({ tableName, type, xCol, yCol }) {
+  const t = String(type || '').toLowerCase() === 'pie' ? 'donut' : String(type || '').toLowerCase();
+  if (!tableName || !xCol || !yCol) {
+    return {
+      sql: '',
+      jsBuilder: 'unknown-builder',
+      origin: 'chart-source',
+      note: 'SQL source is not available for this chart.'
+    };
+  }
+
+  const qt = dq(tableName);
+  const qx = dq(xCol);
+  const qy = dq(yCol);
+
+  if (t === 'bar' || t === 'donut') {
+    return {
+      sql:
+`SELECT ${qx} AS grp, AVG(${qy}) AS avg_val
+FROM ${qt}
+WHERE ${qx} IS NOT NULL AND ${qy} IS NOT NULL
+GROUP BY ${qx}
+ORDER BY avg_val DESC`,
+      jsBuilder: t === 'donut' ? '_donutOption' : '_barOption',
+      origin: 'chart-source',
+      note: ''
+    };
+  }
+
+  if (t === 'line') {
+    return {
+      sql:
+`SELECT CAST(${qx} AS VARCHAR) AS period, AVG(${qy}) AS avg_val
+FROM ${qt}
+WHERE ${qx} IS NOT NULL AND ${qy} IS NOT NULL
+GROUP BY ${qx}
+ORDER BY ${qx}`,
+      jsBuilder: '_lineOption',
+      origin: 'chart-source',
+      note: ''
+    };
+  }
+
+  if (t === 'scatter') {
+    return {
+      sql:
+`SELECT ${qx} AS x, ${qy} AS y
+FROM ${qt}
+WHERE ${qx} IS NOT NULL AND ${qy} IS NOT NULL
+LIMIT 500`,
+      jsBuilder: '_scatterOption',
+      origin: 'chart-source',
+      note: ''
+    };
+  }
+
+  return {
+    sql: '',
+    jsBuilder: 'unknown-builder',
+    origin: 'chart-source',
+    note: `No SQL template is defined for chart type "${t || 'unknown'}".`
+  };
+}
+
+app.post('/api/chart-source', (req, res) => {
+  try {
+    const { tableName, type, xCol, yCol } = req.body || {};
+    const source = buildChartSourceMeta({ tableName, type, xCol, yCol });
+    res.json(source);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ════════════════════════════════════════════════════════════════════════════════
 // LAYER 1 — INTENT DECODER
 // ════════════════════════════════════════════════════════════════════════════════
