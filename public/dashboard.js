@@ -4,8 +4,36 @@ const API = '';
 let loadedTables    = {};
 let allCharts       = [];    // echarts instances for resize
 let chartRegistry   = {};    // chartId -> echarts instance
+let chartMetaById   = {};    // chartId -> conversion state and source option
 let pendingCharts   = [];    // {id, option} waiting for their section to become visible
 let sidebarOpen     = true;
+
+const CHART_TYPE_SEQUENCE = ['auto', 'bar', 'hbar', 'line', 'area', 'donut', 'rose', 'scatter'];
+const CHART_PREFS_KEY = 'convbi_chart_type_prefs_v1';
+
+function _canonicalChartType(type) {
+  const t = String(type || '').toLowerCase();
+  if (t === 'pie') return 'donut';
+  return t;
+}
+
+function _chartTypeLabel(type) {
+  return ({
+    auto: 'Default',
+    bar: 'Bar',
+    hbar: 'Horizontal Bar',
+    line: 'Line',
+    area: 'Area',
+    donut: 'Donut',
+    rose: 'Rose Donut',
+    scatter: 'Scatter'
+  })[type] || 'Default';
+}
+
+function _availableChartTypes(originalType) {
+  const defaultType = _canonicalChartType(originalType);
+  return CHART_TYPE_SEQUENCE.filter(t => t === 'auto' || t !== defaultType);
+}
 
 let workflowState = {
   step1: false,
@@ -367,6 +395,288 @@ function shortFallbackSummary(meta = {}, option = {}) {
   return 'Pattern detected from chart values.';
 }
 
+function _toFiniteNumber(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function _safeReadChartPrefs() {
+  try {
+    const raw = localStorage.getItem(CHART_PREFS_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function _safeWriteChartPrefs(nextPrefs) {
+  try {
+    localStorage.setItem(CHART_PREFS_KEY, JSON.stringify(nextPrefs || {}));
+  } catch (_) {}
+}
+
+function _getChartTypePreference(prefKey) {
+  if (!prefKey) return 'auto';
+  const prefs = _safeReadChartPrefs();
+  const saved = String(prefs[prefKey] || 'auto').toLowerCase();
+  return CHART_TYPE_SEQUENCE.includes(saved) ? saved : 'auto';
+}
+
+function _setChartTypePreference(prefKey, type) {
+  if (!prefKey || !CHART_TYPE_SEQUENCE.includes(type)) return;
+  const prefs = _safeReadChartPrefs();
+  prefs[prefKey] = type;
+  _safeWriteChartPrefs(prefs);
+}
+
+function _chartPreferenceKey(title = '', meta = {}) {
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  const parts = [
+    norm(meta.tableName),
+    norm(title || meta.title),
+    norm(meta.xCol),
+    norm(meta.yCol)
+  ].filter(Boolean);
+  return parts.join('|') || norm(title || 'chart');
+}
+
+function _extractConvertibleSeries(option = {}) {
+  const series = Array.isArray(option.series) ? option.series : [];
+  const first = series[0] || {};
+  const type = String(first.type || '').toLowerCase();
+
+  if (type === 'pie') {
+    const data = Array.isArray(first.data) ? first.data : [];
+    const labels = [];
+    const values = [];
+    data.forEach(d => {
+      const name = String(d?.name ?? '').trim();
+      const value = _toFiniteNumber(d?.value);
+      if (name && Number.isFinite(value)) {
+        labels.push(name);
+        values.push(value);
+      }
+    });
+    if (labels.length >= 2) return { kind: 'category', labels, values };
+    return null;
+  }
+
+  if (type === 'scatter') {
+    const data = Array.isArray(first.data) ? first.data : [];
+    const points = data
+      .map(p => Array.isArray(p) ? [_toFiniteNumber(p[0]), _toFiniteNumber(p[1])] : null)
+      .filter(p => p && Number.isFinite(p[0]) && Number.isFinite(p[1]));
+    if (points.length >= 2) return { kind: 'scatter', points };
+    return null;
+  }
+
+  const xAxis = Array.isArray(option?.xAxis) ? option.xAxis[0] : option?.xAxis;
+  const labels = Array.isArray(xAxis?.data) ? xAxis.data.map(v => String(v)) : [];
+  const data = Array.isArray(first.data) ? first.data : [];
+  const values = data
+    .map(v => {
+      if (typeof v === 'number') return v;
+      if (Array.isArray(v)) return _toFiniteNumber(v[v.length - 1]);
+      if (v && typeof v === 'object' && v.value !== undefined) return _toFiniteNumber(v.value);
+      return _toFiniteNumber(v);
+    });
+
+  const usable = [];
+  const usableLabels = [];
+  for (let i = 0; i < Math.min(labels.length, values.length); i++) {
+    if (Number.isFinite(values[i])) {
+      usableLabels.push(labels[i]);
+      usable.push(values[i]);
+    }
+  }
+  if (usable.length >= 2) return { kind: 'category', labels: usableLabels, values: usable };
+  return null;
+}
+
+function _buildScatterFromPoints(points = [], xName = 'X', yName = 'Y') {
+  return {
+    grid: DARK_GRID, tooltip: DARK_TIP,
+    xAxis: { type:'value', name:String(xName), nameLocation:'middle', nameGap:25, ...DARK_AXIS },
+    yAxis: { type:'value', name:String(yName), nameLocation:'middle', nameGap:40, ...DARK_AXIS },
+    series: [{
+      type:'scatter',
+      data: points,
+      itemStyle:{ color:'#007BFF', opacity:0.6 },
+      symbolSize: 6
+    }]
+  };
+}
+
+function _buildConvertedOption(targetType, sourceOption = {}, summaryMeta = {}) {
+  const extracted = _extractConvertibleSeries(sourceOption);
+  if (!extracted) {
+    return { ok: false, message: 'This chart does not have enough points to convert.' };
+  }
+
+  if (targetType === 'bar' || targetType === 'hbar' || targetType === 'line' || targetType === 'area' || targetType === 'donut' || targetType === 'rose') {
+    let labels = [];
+    let values = [];
+
+    if (extracted.kind === 'category') {
+      labels = extracted.labels;
+      values = extracted.values;
+    } else {
+      labels = extracted.points.map(p => String(Number(p[0].toFixed(2))));
+      values = extracted.points.map(p => p[1]);
+    }
+
+    if (labels.length < 2 || values.length < 2) {
+      return { ok: false, message: 'Need at least 2 values for this chart type.' };
+    }
+
+    if ((targetType === 'donut' || targetType === 'rose') && labels.length > 12) {
+      return { ok: false, message: 'Donut/Rose works best with 12 or fewer categories.' };
+    }
+
+    if (targetType === 'bar') {
+      return { ok: true, option: buildBarOption(labels, values), type: 'bar' };
+    }
+    if (targetType === 'hbar') {
+      return { ok: true, option: buildHorizontalBarOption(labels, values), type: 'bar' };
+    }
+    if (targetType === 'line') {
+      return {
+        ok: true,
+        option: buildLineOption(labels, [{
+          name: String(summaryMeta?.yCol || summaryMeta?.title || 'Value').replace(/_/g, ' '),
+          data: values,
+          color: DARK_COLORS[0]
+        }]),
+        type: 'line'
+      };
+    }
+    if (targetType === 'area') {
+      return {
+        ok: true,
+        option: buildAreaOption(labels, values, String(summaryMeta?.yCol || summaryMeta?.title || 'Value').replace(/_/g, ' ')),
+        type: 'line'
+      };
+    }
+    if (targetType === 'rose') {
+      return { ok: true, option: buildRoseOption(labels, values), type: 'pie' };
+    }
+    return { ok: true, option: buildDonutOption(labels, values), type: 'pie' };
+  }
+
+  if (targetType === 'scatter') {
+    let points = [];
+    if (extracted.kind === 'scatter') {
+      points = extracted.points;
+    } else {
+      const xNumeric = extracted.labels.map(v => _toFiniteNumber(v));
+      if (xNumeric.some(v => !Number.isFinite(v))) {
+        return { ok: false, message: 'Scatter needs numeric X values.' };
+      }
+      points = xNumeric.map((x, i) => [x, extracted.values[i]]);
+    }
+
+    if (points.length < 2) {
+      return { ok: false, message: 'Need at least 2 points for scatter.' };
+    }
+
+    return {
+      ok: true,
+      option: _buildScatterFromPoints(
+        points,
+        String(summaryMeta?.xCol || 'X').replace(/_/g, ' '),
+        String(summaryMeta?.yCol || 'Y').replace(/_/g, ' ')
+      ),
+      type: 'scatter'
+    };
+  }
+
+  return { ok: false, message: 'Unsupported chart conversion type.' };
+}
+
+function showConversionNote(noteId, message, isError = false) {
+  const el = document.getElementById(noteId);
+  if (!el) return;
+  el.textContent = message || '';
+  el.classList.toggle('is-error', !!isError);
+  el.classList.toggle('is-success', !isError && !!message);
+  if (!message) return;
+  setTimeout(() => {
+    if (el.textContent === message) {
+      el.textContent = '';
+      el.classList.remove('is-error', 'is-success');
+    }
+  }, 2400);
+}
+
+function _syncChartTypeControls(state, value) {
+  if (!state) return;
+  const selectEl = document.getElementById(state.convertId);
+  if (selectEl && selectEl.value !== value) selectEl.value = value;
+}
+
+function applyChartOption(chartId, option) {
+  const chart = chartRegistry[chartId];
+  if (chart) {
+    chart.setOption({ ..._normalizeOption(option), backgroundColor: 'transparent' }, true);
+    try { chart.resize(); } catch (_) {}
+    return true;
+  }
+
+  const pending = pendingCharts.find(p => p.id === chartId);
+  if (pending) {
+    pending.option = option;
+    return true;
+  }
+  return false;
+}
+
+function handleChartTypeChange(chartId, selectedType) {
+  const state = chartMetaById[chartId];
+  if (!state) return;
+  if (!state.availableTypes.includes(selectedType)) return;
+  const isRefresh = state.currentType === selectedType;
+
+  if (selectedType === 'auto') {
+    const applied = applyChartOption(chartId, state.originalOption);
+    if (!applied) return;
+    state.currentOption = state.originalOption;
+    state.currentType = 'auto';
+    _syncChartTypeControls(state, 'auto');
+    _setChartTypePreference(state.prefKey, 'auto');
+    fillChartSummary(state.summaryId, { ...state.summaryMeta, type: state.originalType }, state.currentOption);
+    showConversionNote(state.noteId, isRefresh ? 'Refreshed default chart.' : 'Showing auto-selected chart.');
+    return;
+  }
+
+  const result = _buildConvertedOption(selectedType, state.originalOption, state.summaryMeta);
+  if (!result.ok || !result.option) {
+    _syncChartTypeControls(state, state.currentType);
+    showConversionNote(state.noteId, result.message || 'Could not convert this chart.', true);
+    return;
+  }
+
+  const applied = applyChartOption(chartId, result.option);
+  if (!applied) {
+    showConversionNote(state.noteId, 'Chart is still loading. Try again.', true);
+    return;
+  }
+
+  state.currentOption = result.option;
+  state.currentType = selectedType;
+  _syncChartTypeControls(state, selectedType);
+  _setChartTypePreference(state.prefKey, selectedType);
+  fillChartSummary(state.summaryId, { ...state.summaryMeta, type: result.type || selectedType }, state.currentOption);
+  showConversionNote(state.noteId, isRefresh ? `Refreshed ${selectedType} chart.` : `Switched to ${selectedType} chart.`);
+}
+
+function refreshChartType(chartId) {
+  const state = chartMetaById[chartId];
+  if (!state) return;
+  const current = state.currentType || 'auto';
+  handleChartTypeChange(chartId, current);
+}
+
 function isWeakSummary(summary = '') {
   const s = String(summary).toLowerCase().trim();
   const genericPhrases = [
@@ -453,14 +763,36 @@ async function fillChartSummary(summaryId, meta, option) {
 function buildChartCard({ container, chartId, title, sub, option, summaryMeta, delayIndex }) {
   const summaryId = `${chartId}_summary`;
   const exportId = `${chartId}_export`;
+  const convertId = `${chartId}_convert`;
+  const cycleId = `${chartId}_cycle`;
+  const noteId = `${chartId}_convert_note`;
+  const originalType = String(summaryMeta?.type || option?.series?.[0]?.type || '').toLowerCase();
+  const defaultType = _canonicalChartType(originalType);
+  const availableTypes = _availableChartTypes(originalType);
+  const selectOptions = availableTypes
+    .map(type => {
+      const label = type === 'auto' && defaultType && defaultType !== 'auto'
+        ? `Default (${_chartTypeLabel(defaultType)})`
+        : _chartTypeLabel(type);
+      return `<option value="${type}">${label}</option>`;
+    })
+    .join('');
+  const prefKey = _chartPreferenceKey(title, summaryMeta);
   const subtitleHtml = sub ? `<div class="db-chart-card-sub">${escapeHtml(sub)}</div>` : '';
   const card = document.createElement('div');
   card.className = 'db-chart-card';
   card.innerHTML = `
     <div class="db-chart-card-head">
       <div class="db-chart-card-title">${escapeHtml(title)}</div>
-      <button class="db-chart-export-btn" id="${exportId}" type="button">Export Image</button>
+      <div class="db-chart-card-actions">
+        <button class="db-chart-cycle-btn" id="${cycleId}" type="button" title="Refresh chart" aria-label="Refresh chart">↺</button>
+        <select class="db-chart-type-select" id="${convertId}" aria-label="Convert chart type">
+          ${selectOptions}
+        </select>
+        <button class="db-chart-export-btn" id="${exportId}" type="button">Export Image</button>
+      </div>
     </div>
+    <div class="db-chart-convert-note" id="${noteId}" aria-live="polite"></div>
     ${subtitleHtml}
     <div class="db-chart-inner" id="${chartId}"></div>
     <div class="db-chart-summary" id="${summaryId}">Summarizing...</div>`;
@@ -471,10 +803,37 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
     exportBtn.addEventListener('click', () => exportChartImage(chartId, title));
   }
 
+  chartMetaById[chartId] = {
+    originalOption: option,
+    currentOption: option,
+    currentType: 'auto',
+    originalType,
+    summaryMeta,
+    summaryId,
+    convertId,
+    noteId,
+    prefKey,
+    availableTypes
+  };
+
+  const convertEl = document.getElementById(convertId);
+  if (convertEl) {
+    convertEl.addEventListener('change', e => handleChartTypeChange(chartId, String(e.target.value || 'auto')));
+  }
+
+  const cycleEl = document.getElementById(cycleId);
+  if (cycleEl) {
+    cycleEl.addEventListener('click', () => refreshChartType(chartId));
+  }
+
   const cid = chartId;
   const opt = option;
   setTimeout(() => {
     if (!tryInitChart(cid, opt)) pendingCharts.push({ id: cid, option: opt });
+    const preferredType = _getChartTypePreference(prefKey);
+    const validPreferredType = availableTypes.includes(preferredType) ? preferredType : 'auto';
+    if (validPreferredType !== preferredType) _setChartTypePreference(prefKey, validPreferredType);
+    if (validPreferredType !== 'auto') handleChartTypeChange(cid, validPreferredType);
   }, 80 + delayIndex * 30);
 
   fillChartSummary(summaryId, summaryMeta, option);
@@ -499,6 +858,7 @@ async function loadDashboard() {
   allCharts.forEach(c => { try { c.dispose(); } catch (_) {} });
   allCharts   = [];
   chartRegistry = {};
+  chartMetaById = {};
   pendingCharts = [];
 
   try {
@@ -1035,6 +1395,57 @@ function buildBarOption(xData, yData) {
   };
 }
 
+function buildHorizontalBarOption(labels, values) {
+  return {
+    grid: { ...DARK_GRID, left: 40, right: 20, bottom: 20, top: 20 },
+    tooltip: DARK_TIP,
+    xAxis: { type:'value', ...DARK_AXIS },
+    yAxis: { type:'category', data: labels, ...DARK_AXIS, axisLabel:{...DARK_AXIS.axisLabel, width: 120, overflow: 'truncate'} },
+    series: [{
+      type:'bar',
+      data: values,
+      itemStyle:{borderRadius:[0,4,4,0], color: {
+        type:'linear', x:0,y:0,x2:1,y2:0,
+        colorStops:[{offset:0,color:'#9d71d9'},{offset:1,color:'#6F42C1'}]
+      }},
+      label:{
+        show: labels.length<=10,
+        position:'right',
+        color:'#6B7280',
+        fontSize:10,
+        formatter: p => (Number.isFinite(+p.value) ? (+p.value).toFixed(2) : p.value)
+      }
+    }]
+  };
+}
+
+function buildAreaOption(labels, values, seriesName = 'Value') {
+  return {
+    grid: DARK_GRID, tooltip: DARK_TIP, legend: DARK_LEGEND,
+    xAxis: { type:'category', data:labels, ...DARK_AXIS, axisLabel:{...DARK_AXIS.axisLabel, rotate:labels.length>8?30:0} },
+    yAxis: { type:'value', ...DARK_AXIS },
+    series: [{
+      name: seriesName,
+      type:'line',
+      data: values,
+      smooth:true,
+      lineStyle:{ width:2, color:DARK_COLORS[0] },
+      itemStyle:{ color:DARK_COLORS[0] },
+      areaStyle:{
+        color: {
+          type:'linear', x:0, y:0, x2:0, y2:1,
+          colorStops:[
+            { offset:0, color:'rgba(111,66,193,0.35)' },
+            { offset:1, color:'rgba(111,66,193,0.04)' }
+          ]
+        }
+      },
+      symbol:'circle',
+      symbolSize:4
+    }]
+  };
+}
+
 function buildDonutOption(labels, values) {
   return {
     tooltip: { trigger:'item', backgroundColor:'#FFFFFF', borderColor:'#E5E7EB', textStyle:{color:'#111827'} },
@@ -1044,6 +1455,22 @@ function buildDonutOption(labels, values) {
       data: labels.map((l,i) => ({ name:l, value:values[i], itemStyle:{color:DARK_COLORS[i%DARK_COLORS.length]} })),
       label:{ color:'#6B7280', fontSize:11 },
       labelLine:{lineStyle:{color:'#E5E7EB'}}
+    }]
+  };
+}
+
+function buildRoseOption(labels, values) {
+  return {
+    tooltip: { trigger:'item', backgroundColor:'#FFFFFF', borderColor:'#E5E7EB', textStyle:{color:'#111827'} },
+    legend: { orient:'vertical', right:10, top:'center', ...DARK_LEGEND },
+    series: [{
+      type:'pie',
+      roseType:'radius',
+      radius:['20%','72%'],
+      center:['40%','50%'],
+      data: labels.map((l,i) => ({ name:l, value:values[i], itemStyle:{color:DARK_COLORS[i%DARK_COLORS.length]} })),
+      label:{ color:'#6B7280', fontSize:11 },
+      labelLine:{ lineStyle:{ color:'#E5E7EB' } }
     }]
   };
 }

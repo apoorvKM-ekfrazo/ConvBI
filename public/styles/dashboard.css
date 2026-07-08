@@ -361,6 +361,11 @@ body.sidebar-collapsed .db-float-toggle { left: var(--sidebar-wc); }
   justify-content: space-between;
   gap: 10px;
 }
+.db-chart-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .db-chart-card-title {
   font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 3px;
   display: flex; align-items: center; gap: 8px;
@@ -374,6 +379,40 @@ body.sidebar-collapsed .db-float-toggle { left: var(--sidebar-wc); }
 }
 .db-chart-card-sub   { font-size: 11px; color: var(--text-muted); margin-bottom: 14px; padding-left: 11px; }
 .db-chart-inner      { height: 260px; }
+.db-chart-type-select {
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.db-chart-cycle-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  line-height: 1;
+}
+.db-chart-cycle-btn:hover,
+.db-chart-cycle-btn:focus {
+  color: var(--text-primary);
+  border-color: var(--accent-blue);
+  outline: none;
+}
+.db-chart-type-select:hover,
+.db-chart-type-select:focus {
+  color: var(--text-primary);
+  border-color: var(--accent-blue);
+  outline: none;
+}
 .db-chart-export-btn {
   border: 1px solid var(--border);
   background: var(--bg-hover);
@@ -389,6 +428,14 @@ body.sidebar-collapsed .db-float-toggle { left: var(--sidebar-wc); }
   color: var(--text-primary);
   border-color: var(--accent-blue);
 }
+.db-chart-convert-note {
+  min-height: 14px;
+  margin: 2px 0 8px 11px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.db-chart-convert-note.is-error { color: var(--accent-red); }
+.db-chart-convert-note.is-success { color: var(--accent-blue); }
 .db-chart-summary {
   margin-top: 10px;
   padding-top: 10px;
@@ -423,6 +470,17 @@ body.sidebar-collapsed .db-float-toggle { left: var(--sidebar-wc); }
 }
 .db-data-table tr:hover td { background: var(--bg-hover); color: var(--text-primary); }
 .table-row-count { font-size: 12px; color: var(--text-muted); margin-top: 12px; text-align: right; }
+
+@media (max-width: 860px) {
+  .db-chart-card-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .db-chart-card-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
 
 /* ── History panel ────────────────────────────── */
 .db-history-panel {
