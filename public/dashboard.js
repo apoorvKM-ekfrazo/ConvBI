@@ -453,6 +453,7 @@ async function fillChartSummary(summaryId, meta, option) {
 function buildChartCard({ container, chartId, title, sub, option, summaryMeta, delayIndex }) {
   const summaryId = `${chartId}_summary`;
   const exportId = `${chartId}_export`;
+  const subtitleHtml = sub ? `<div class="db-chart-card-sub">${escapeHtml(sub)}</div>` : '';
   const card = document.createElement('div');
   card.className = 'db-chart-card';
   card.innerHTML = `
@@ -460,7 +461,7 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
       <div class="db-chart-card-title">${escapeHtml(title)}</div>
       <button class="db-chart-export-btn" id="${exportId}" type="button">Export Image</button>
     </div>
-    <div class="db-chart-card-sub">${escapeHtml(sub)}</div>
+    ${subtitleHtml}
     <div class="db-chart-inner" id="${chartId}"></div>
     <div class="db-chart-summary" id="${summaryId}">Summarizing...</div>`;
   container.appendChild(card);
@@ -817,7 +818,7 @@ async function renderSmartCharts(tableNames, containerId, maxCharts, samplesForF
   for (const def of allDefs.slice(0, maxCharts)) {
     const cid  = `sc_${containerId}_${def.tableName.replace(/[^a-z0-9]/gi,'_')}_${count}`;
     const title = def.option?.title?.text || `${(def.yCol||'').replace(/_/g,' ')} by ${(def.xCol||'').replace(/_/g,' ')}`;
-    const sub   = `${def.type} · score ${def.score} · ${def.tableName}`;
+    const sub   = '';
 
     buildChartCard({
       container,
@@ -968,11 +969,11 @@ function renderAutoCharts(samples, containerId, maxCharts) {
         container,
         chartId,
         title: chartDef.title,
-        sub: chartDef.sub,
+        sub: '',
         option: chartDef.option,
         summaryMeta: {
           title: chartDef.title,
-          subtitle: chartDef.sub,
+          subtitle: '',
           type: (chartDef.option?.series?.[0]?.type || '').toLowerCase(),
           tableName: name,
           xCol: '',
