@@ -642,6 +642,201 @@ Rules:
 - Never invent table/column names.
 - Return ONLY valid JSON.`;
 
+const VISUAL_RECOMMENDER_SYSTEM = `You are an expert BI chart strategist selecting the best 6 visuals from candidate chart metadata.
+Return JSON only:
+{
+  "top_visuals": [
+    { "key": "candidate_key", "why": "short reason" }
+  ]
+}
+Rules:
+- Select at most 6 candidates.
+- Prefer high score and business relevance.
+- Enforce diversity: avoid too many of the same chart type or same table.
+- If date fields exist, include at least one trend chart (line/area) when possible.
+- Do not invent keys.
+- Return ONLY valid JSON.`;
+
+const QUESTION_VISUAL_RECOMMENDER_SYSTEM = `You are an expert BI strategist.
+You will receive a question pool generated from data-aware chart candidates.
+Select the most relevant business questions first, then keep their mapped chart keys.
+Return JSON only:
+{
+  "top_questions": [
+    { "question_id": "q_1", "why": "short reason" }
+  ]
+}
+Rules:
+- Select at most 6 question ids.
+- Prefer questions that matter for business decisions (trend, driver, contribution, relationship, risk/opportunity).
+- Ensure diversity across themes and tables.
+- Do not invent ids.
+- Return ONLY valid JSON.`;
+
+function isTrendType(type) {
+  return ['line', 'area'].includes(String(type || '').toLowerCase());
+}
+
+function isCompositionOrDistributionType(type) {
+  return ['donut', 'pie', 'scatter', 'bar', 'hbar'].includes(String(type || '').toLowerCase());
+}
+
+function deterministicVisualRecommendations(candidates, limit = 6) {
+  const sorted = [...candidates].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+  const selected = [];
+  const byType = new Map();
+  const byTable = new Map();
+
+  const maxPerType = Math.max(1, Math.floor(limit / 3));
+  const maxPerTable = Math.max(1, Math.floor(limit / 3));
+
+  const pickOne = predicate => {
+    const idx = sorted.findIndex(c => predicate(c) && !selected.some(s => s.key === c.key));
+    if (idx < 0) return;
+    const c = sorted[idx];
+    selected.push({ key: c.key, why: 'Selected for diversity and relevance.' });
+    byType.set(c.type, (byType.get(c.type) || 0) + 1);
+    byTable.set(c.tableName, (byTable.get(c.tableName) || 0) + 1);
+  };
+
+  // Seed diversity: trend + non-trend if possible.
+  pickOne(c => isTrendType(c.type));
+  pickOne(c => isCompositionOrDistributionType(c.type));
+
+  for (const c of sorted) {
+    if (selected.length >= limit) break;
+    if (selected.some(s => s.key === c.key)) continue;
+    const tCount = byType.get(c.type) || 0;
+    const tbCount = byTable.get(c.tableName) || 0;
+    if (tCount >= maxPerType || tbCount >= maxPerTable) continue;
+    selected.push({ key: c.key, why: 'High score with balanced chart mix.' });
+    byType.set(c.type, tCount + 1);
+    byTable.set(c.tableName, tbCount + 1);
+  }
+
+  // Fill remaining slots by raw score if constraints were too strict.
+  if (selected.length < limit) {
+    for (const c of sorted) {
+      if (selected.length >= limit) break;
+      if (selected.some(s => s.key === c.key)) continue;
+      selected.push({ key: c.key, why: 'Added to complete top visual set.' });
+    }
+  }
+
+  return selected.slice(0, limit);
+}
+
+function humanizeCol(name) {
+  return String(name || '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function inferQuestionTheme(type) {
+  const t = String(type || '').toLowerCase();
+  if (['line', 'area'].includes(t)) return 'trend';
+  if (['bar', 'hbar'].includes(t)) return 'comparison';
+  if (['donut', 'pie', 'rose'].includes(t)) return 'contribution';
+  if (['scatter'].includes(t)) return 'relationship';
+  return 'pattern';
+}
+
+function questionTextFromCandidate(c) {
+  const x = humanizeCol(c?.xCol || 'dimension');
+  const y = humanizeCol(c?.yCol || 'metric');
+  const theme = inferQuestionTheme(c?.type);
+
+  if (theme === 'trend') return `How is ${y} changing over time?`;
+  if (theme === 'comparison') return `Which ${x} segments are driving ${y}?`;
+  if (theme === 'contribution') return `How is ${y} distributed across ${x}?`;
+  if (theme === 'relationship') return `What is the relationship between ${x} and ${y}?`;
+  return `What is the key pattern in ${y} by ${x}?`;
+}
+
+function buildQuestionPool(candidates = []) {
+  const pool = [];
+  let idx = 1;
+  for (const c of candidates) {
+    const score = Number(c?.score || 0);
+    const tableName = String(c?.tableName || '').trim();
+    const type = String(c?.type || '').trim().toLowerCase();
+    const key = String(c?.key || '').trim();
+    if (!key || !tableName) continue;
+
+    const theme = inferQuestionTheme(type);
+    const question = questionTextFromCandidate(c);
+    const qScore = score + (theme === 'trend' ? 4 : theme === 'comparison' ? 3 : 2);
+
+    pool.push({
+      questionId: `q_${idx++}`,
+      businessQuestion: question,
+      theme,
+      key,
+      tableName,
+      type,
+      xCol: String(c?.xCol || ''),
+      yCol: String(c?.yCol || ''),
+      score,
+      questionScore: qScore
+    });
+  }
+  return pool;
+}
+
+function deterministicQuestionVisualRecommendations(questionPool, limit = 6) {
+  const sorted = [...questionPool].sort((a, b) => Number(b.questionScore || 0) - Number(a.questionScore || 0));
+  const selected = [];
+  const byTheme = new Map();
+  const byTable = new Map();
+  const seenQuestion = new Set();
+
+  const maxPerTheme = Math.max(1, Math.floor(limit / 2));
+  const maxPerTable = Math.max(1, Math.floor(limit / 3));
+
+  const pickTheme = targetTheme => {
+    const row = sorted.find(item =>
+      item.theme === targetTheme &&
+      !seenQuestion.has(item.businessQuestion) &&
+      !selected.some(s => s.questionId === item.questionId)
+    );
+    if (!row) return;
+    selected.push(row);
+    seenQuestion.add(row.businessQuestion);
+    byTheme.set(row.theme, (byTheme.get(row.theme) || 0) + 1);
+    byTable.set(row.tableName, (byTable.get(row.tableName) || 0) + 1);
+  };
+
+  // Seed important business themes first.
+  pickTheme('trend');
+  pickTheme('comparison');
+  pickTheme('contribution');
+
+  for (const row of sorted) {
+    if (selected.length >= limit) break;
+    if (seenQuestion.has(row.businessQuestion)) continue;
+    if ((byTheme.get(row.theme) || 0) >= maxPerTheme) continue;
+    if ((byTable.get(row.tableName) || 0) >= maxPerTable) continue;
+    selected.push(row);
+    seenQuestion.add(row.businessQuestion);
+    byTheme.set(row.theme, (byTheme.get(row.theme) || 0) + 1);
+    byTable.set(row.tableName, (byTable.get(row.tableName) || 0) + 1);
+  }
+
+  if (selected.length < limit) {
+    for (const row of sorted) {
+      if (selected.length >= limit) break;
+      if (seenQuestion.has(row.businessQuestion)) continue;
+      selected.push(row);
+      seenQuestion.add(row.businessQuestion);
+    }
+  }
+
+  return selected.slice(0, limit).map(row => ({
+    questionId: row.questionId,
+    businessQuestion: row.businessQuestion,
+    key: row.key,
+    why: 'Selected for business relevance, chart fitness, and diversity.'
+  }));
+}
+
 function scoreKpiCandidate(candidate) {
   const name = String(candidate?.column || '').toLowerCase();
   const spread = Number(candidate?.spread || 0);
@@ -767,6 +962,118 @@ app.post('/api/recommend-kpis', async (req, res) => {
     return res.json({ kpis: selected, mode: 'ai', provider: aiOut.provider, model: aiOut.model });
   } catch (e) {
     console.error('[/api/recommend-kpis] error:', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/recommend-visuals — AI + deterministic fallback for top chart set
+app.post('/api/recommend-visuals', async (req, res) => {
+  try {
+    const limit = Math.min(12, Math.max(1, Number(req.body?.limit || 6)));
+    const candidates = Array.isArray(req.body?.candidates) ? req.body.candidates : [];
+    if (!candidates.length) return res.status(400).json({ error: 'Missing candidates payload.' });
+
+    const normalized = [];
+    const keySet = new Set();
+    for (const c of candidates) {
+      const key = String(c?.key || '').trim();
+      if (!key || keySet.has(key)) continue;
+      keySet.add(key);
+      normalized.push({
+        key,
+        tableName: String(c?.tableName || '').trim(),
+        type: String(c?.type || '').trim().toLowerCase(),
+        xCol: String(c?.xCol || '').trim(),
+        yCol: String(c?.yCol || '').trim(),
+        score: Number(c?.score || 0)
+      });
+    }
+
+    if (!normalized.length) return res.json({ visuals: [], mode: 'empty' });
+
+    const questionPool = buildQuestionPool(normalized);
+    if (!questionPool.length) return res.json({ visuals: [], mode: 'empty' });
+
+    const byQuestionId = new Map(questionPool.map(q => [q.questionId, q]));
+    const fallback = deterministicQuestionVisualRecommendations(questionPool, limit);
+    const aiOut = await requestViaProviderManager({
+      messages: [
+        { role: 'system', content: QUESTION_VISUAL_RECOMMENDER_SYSTEM },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            limit,
+            question_pool: questionPool
+              .sort((a, b) => b.questionScore - a.questionScore)
+              .slice(0, 24)
+              .map(q => ({
+                question_id: q.questionId,
+                business_question: q.businessQuestion,
+                theme: q.theme,
+                key: q.key,
+                table: q.tableName,
+                chart_type: q.type,
+                score: q.questionScore
+              }))
+          }, null, 2)
+        }
+      ],
+      max_tokens: 650,
+      temperature: 0,
+      top_p: 1,
+      seed: 42
+    });
+
+    if (!aiOut.ok) {
+      return res.json({
+        visuals: fallback.map(item => ({ key: item.key, why: item.why, questionId: item.questionId })),
+        internalQuestions: fallback.map(item => ({ questionId: item.questionId, businessQuestion: item.businessQuestion, key: item.key })),
+        mode: 'fallback',
+        attempted: aiOut.attempted || []
+      });
+    }
+
+    const parsed = extractJson(aiOut.text) || {};
+    const top = Array.isArray(parsed?.top_questions) ? parsed.top_questions : [];
+    const selected = [];
+    const seenQuestion = new Set();
+    const seenKey = new Set();
+
+    for (const item of top) {
+      const questionId = String(item?.question_id || item?.questionId || '').trim();
+      const mapped = byQuestionId.get(questionId);
+      if (!mapped) continue;
+      if (seenQuestion.has(questionId) || seenKey.has(mapped.key)) continue;
+      seenQuestion.add(questionId);
+      seenKey.add(mapped.key);
+      selected.push({
+        questionId,
+        businessQuestion: mapped.businessQuestion,
+        key: mapped.key,
+        why: String(item?.why || '').trim() || 'Selected by AI question-first ranking.'
+      });
+      if (selected.length >= limit) break;
+    }
+
+    if (selected.length < limit) {
+      for (const item of fallback) {
+        if (seenQuestion.has(item.questionId) || seenKey.has(item.key)) continue;
+        seenQuestion.add(item.questionId);
+        seenKey.add(item.key);
+        selected.push(item);
+        if (selected.length >= limit) break;
+      }
+    }
+
+    return res.json({
+      visuals: selected.map(item => ({ key: item.key, why: item.why, questionId: item.questionId })),
+      internalQuestions: selected.map(item => ({ questionId: item.questionId, businessQuestion: item.businessQuestion, key: item.key })),
+      mode: 'ai',
+      provider: aiOut.provider,
+      model: aiOut.model
+    });
+  } catch (e) {
+    console.error('[/api/recommend-visuals] error:', e.message);
     return res.status(500).json({ error: e.message });
   }
 });

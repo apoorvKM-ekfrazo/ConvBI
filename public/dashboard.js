@@ -1519,6 +1519,81 @@ function renderRelationshipMap(names, relData) {
   }
 }
 
+function chartDefKey(def = {}) {
+  return [def.tableName || '', def.type || '', def.xCol || '', def.yCol || ''].join('::');
+}
+
+function deterministicTopVisuals(candidates = [], limit = 6) {
+  const sorted = [...candidates].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+  const selected = [];
+  const byType = new Map();
+  const byTable = new Map();
+
+  const maxPerType = Math.max(1, Math.floor(limit / 3));
+  const maxPerTable = Math.max(1, Math.floor(limit / 3));
+  const isTrend = t => ['line', 'area'].includes(String(t || '').toLowerCase());
+  const isCompositionOrDistribution = t => ['donut', 'pie', 'scatter', 'bar', 'hbar'].includes(String(t || '').toLowerCase());
+
+  const pickOne = predicate => {
+    const found = sorted.find(c => predicate(c) && !selected.some(s => s.key === c.key));
+    if (!found) return;
+    selected.push(found);
+    byType.set(found.type, (byType.get(found.type) || 0) + 1);
+    byTable.set(found.tableName, (byTable.get(found.tableName) || 0) + 1);
+  };
+
+  pickOne(c => isTrend(c.type));
+  pickOne(c => isCompositionOrDistribution(c.type));
+
+  for (const c of sorted) {
+    if (selected.length >= limit) break;
+    if (selected.some(s => s.key === c.key)) continue;
+    const typeCount = byType.get(c.type) || 0;
+    const tableCount = byTable.get(c.tableName) || 0;
+    if (typeCount >= maxPerType || tableCount >= maxPerTable) continue;
+    selected.push(c);
+    byType.set(c.type, typeCount + 1);
+    byTable.set(c.tableName, tableCount + 1);
+  }
+
+  if (selected.length < limit) {
+    for (const c of sorted) {
+      if (selected.length >= limit) break;
+      if (selected.some(s => s.key === c.key)) continue;
+      selected.push(c);
+    }
+  }
+
+  return selected.slice(0, limit);
+}
+
+async function fetchTopVisualRecommendations(defs = [], limit = 6) {
+  try {
+    const payload = {
+      limit,
+      candidates: defs.map(d => ({
+        key: d.key,
+        tableName: d.tableName,
+        type: d.type,
+        xCol: d.xCol,
+        yCol: d.yCol,
+        score: d.score
+      }))
+    };
+
+    const res = await fetch(`${API}/api/recommend-visuals`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data?.visuals) ? data.visuals : [];
+  } catch (_) {
+    return [];
+  }
+}
+
 // ── Smart chart gallery (uses /api/charts/:tableName pipeline) ────────────────
 async function renderSmartCharts(tableNames, containerId, maxCharts, samplesForFallback = {}) {
   const container = document.getElementById(containerId);
@@ -1533,18 +1608,39 @@ async function renderSmartCharts(tableNames, containerId, maxCharts, samplesForF
       if (!res.ok) return;
       const data = await res.json();
       for (const c of (data.charts || [])) {
-        allDefs.push({ ...c, tableName });
+        allDefs.push({ ...c, tableName, key: chartDefKey({ ...c, tableName }) });
       }
     } catch (_) {}
   }));
 
-  // Sort by score descending
+  // Sort by score descending and then run AI/global diversity selection.
   allDefs.sort((a, b) => b.score - a.score);
+  const aiRecommended = await fetchTopVisualRecommendations(allDefs, maxCharts);
+  const byKey = new Map(allDefs.map(d => [d.key, d]));
+  const selected = [];
+  const seen = new Set();
+
+  aiRecommended.forEach(item => {
+    const key = String(item?.key || '').trim();
+    const def = byKey.get(key);
+    if (!def || seen.has(key) || selected.length >= maxCharts) return;
+    selected.push(def);
+    seen.add(key);
+  });
+
+  if (selected.length < maxCharts) {
+    deterministicTopVisuals(allDefs, maxCharts).forEach(def => {
+      if (selected.length >= maxCharts) return;
+      if (seen.has(def.key)) return;
+      selected.push(def);
+      seen.add(def.key);
+    });
+  }
 
   container.innerHTML = '';
   let count = 0;
 
-  for (const def of allDefs.slice(0, maxCharts)) {
+  for (const def of selected.slice(0, maxCharts)) {
     const cid  = `sc_${containerId}_${def.tableName.replace(/[^a-z0-9]/gi,'_')}_${count}`;
     const title = def.option?.title?.text || `${(def.yCol||'').replace(/_/g,' ')} by ${(def.xCol||'').replace(/_/g,' ')}`;
     const sub   = '';
