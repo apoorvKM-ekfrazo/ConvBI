@@ -1230,6 +1230,20 @@ async function renderKPIStrip(samples) {
   let totalRows = 0;
 
   const TYPE_CANDIDATES = ['INTEGER', 'BIGINT', 'DOUBLE', 'FLOAT', 'REAL', 'DECIMAL', 'NUMERIC'];
+  const compactNumber = new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: 1
+  });
+
+  const normalizeLabel = raw => String(raw || '')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, c => c.toUpperCase());
+
+  const isPercentMetric = name => /pct|percentage|%|rate|ratio|conversion|churn|retention/i.test(name);
+  const isCurrencyMetric = name => /sales|revenue|profit|margin|cost|expense|spend|amount|value|price|gmv|arr|mrr|income/i.test(name);
+
   const scoreNameRelevance = (rawName) => {
     const name = String(rawName || '').toLowerCase();
     let score = 0;
@@ -1247,18 +1261,21 @@ async function renderKPIStrip(samples) {
 
   const formatKPIValue = (colName, vals) => {
     const name = String(colName || '');
-    const isPercent = /pct|percentage|%|rate|ratio|conversion|churn|retention/i.test(name);
+    const percentMetric = isPercentMetric(name);
     const sum = vals.reduce((a, b) => a + b, 0);
     const avg = sum / vals.length;
+    const baseValue = /total|sum|amount|sales|revenue|profit|cost|expense|spend|value|gmv|arr|mrr|orders?|units?|volume|quantity/i.test(name)
+      ? sum
+      : avg;
 
-    if (isPercent) {
+    if (percentMetric) {
       // Keep percentage/rate KPIs on average to avoid inflated totals.
       return `${avg.toFixed(1)}%`;
     }
-    if (/total|sum|amount|sales|revenue|profit|cost|expense|spend|value|gmv|arr|mrr|orders?|units?|volume|quantity/i.test(name)) {
-      return Math.round(sum).toLocaleString();
+    if (isCurrencyMetric(name)) {
+      return `$${compactNumber.format(baseValue)}`;
     }
-    return Math.round(avg).toLocaleString();
+    return compactNumber.format(baseValue);
   };
 
   const computeTrend = vals => {
@@ -1298,7 +1315,7 @@ async function renderKPIStrip(samples) {
       candidateKPIs.push({
         _key: `${name}::${col.name}`,
         _rawColumn: col.name,
-        label: col.name.replace(/_/g,' '),
+        label: normalizeLabel(col.name),
         value: formatKPIValue(col.name, vals),
         trend: trend.dir,
         pct: Math.abs(trend.pct).toFixed(1),
@@ -1322,7 +1339,7 @@ async function renderKPIStrip(samples) {
     const match = byKey.get(key);
     if (!match || seen.has(key) || topKPIs.length >= 5) return;
     seen.add(key);
-    topKPIs.push(match);
+    topKPIs.push({ ...match, _why: String(item?.why || '').trim() });
   });
 
   rankedFallback.forEach(k => {
@@ -1334,18 +1351,17 @@ async function renderKPIStrip(samples) {
 
   // Fallback if dataset has too few numeric metrics.
   if (!topKPIs.length || topKPIs.length < 5) {
-    topKPIs.unshift({ label: 'Total Records', value: totalRows.toLocaleString(), trend: 'flat', pct: '0', table: 'all' });
+    topKPIs.unshift({ label: 'Total Records', value: compactNumber.format(totalRows), trend: 'flat', pct: '0', table: 'all', _why: 'Row volume across loaded tables.' });
   }
 
   const arrowMap = { up: '▲', down: '▼', flat: '→' };
   const clsMap   = { up: 'kpi-trend-up', down: 'kpi-trend-down', flat: 'kpi-trend-flat' };
 
   el.innerHTML = topKPIs.slice(0, 5).map(k => `
-    <div class="kpi-card" onclick="filterByKPI('${escapeHtml(k.label)}')">
+    <div class="kpi-card" onclick="filterByKPI('${escapeHtml(k.label)}')" title="${escapeHtml(`Source: ${k.table || 'all'}${k._why ? `\nAI reason: ${k._why}` : ''}`)}">
       <div class="kpi-label">${escapeHtml(k.label)}</div>
       <div class="kpi-value">${escapeHtml(k.value)}</div>
-      <div class="kpi-trend ${clsMap[k.trend]}">${arrowMap[k.trend]} ${k.pct}% vs prior half</div>
-      <div class="kpi-sub">${escapeHtml(k.table)}</div>
+      <div class="kpi-trend ${clsMap[k.trend]}">${arrowMap[k.trend]} ${k.pct}% vs prev period</div>
     </div>`).join('');
 }
 
