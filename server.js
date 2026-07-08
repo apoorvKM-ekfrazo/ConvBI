@@ -11,16 +11,24 @@ const crypto  = require('crypto');
 const app = express();
 const DEFAULT_PORT = parseInt(process.env.PORT, 10) || 3001;
 
-// ── API keys (loaded from .env) ───────────────────────────────────────────────
-const OPENAI_API_KEY    = process.env.OPENAI_API_KEY    || '';
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+// ── AI Provider Manager config (Groq -> OpenAI optional) ─
+const OPENAI_API_KEY      = process.env.OPENAI_API_KEY      || '';
+const ANTHROPIC_API_KEY   = process.env.ANTHROPIC_API_KEY   || '';
+const GROQ_API_KEY        = process.env.GROQ_API_KEY        || '';
 
-if (!OPENAI_API_KEY) {
-  console.error('ERROR: OPENAI_API_KEY is not set. Add it to your .env file.');
-  process.exit(1);
+const OPENAI_ENDPOINT      = process.env.OPENAI_ENDPOINT      || 'https://api.openai.com/v1/chat/completions';
+const GROQ_ENDPOINT        = process.env.GROQ_ENDPOINT        || 'https://api.groq.com/openai/v1/chat/completions';
+
+const ENABLE_OPENAI = String(process.env.ENABLE_OPENAI || 'true').toLowerCase() !== 'false';
+const PROVIDER_ORDER = (process.env.AI_PROVIDER_ORDER || 'groq,openai')
+  .split(',')
+  .map(s => s.trim().toLowerCase())
+  .filter(Boolean)
+  .filter(p => ['groq', 'openai'].includes(p));
+
+if (!OPENAI_API_KEY && !GROQ_API_KEY) {
+  console.warn('[AI] No Groq/OpenAI keys found. ConvBI will use local deterministic fallback only.');
 }
-
-const OPENAI_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
 
 // ── Query result cache (LRU, 500 entries, persisted to disk) ──────────────────
 const CACHE_FILE = path.join(__dirname, 'query-cache.json');
@@ -51,6 +59,9 @@ function putQueryCache(key, value) {
 
 const MODEL_CANDIDATES = [process.env.OPENAI_MODEL || 'gpt-4.1-mini', process.env.OPENAI_FALLBACK_MODEL || 'gpt-4o'];
 const COMPLEX_MODEL    = process.env.OPENAI_COMPLEX_MODEL || 'gpt-4o';
+
+const GROQ_MODEL           = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
+const GROQ_COMPLEX_MODEL   = process.env.GROQ_COMPLEX_MODEL || GROQ_MODEL;
 
 // ── Connectors & engine (lazy — graceful if packages not installed yet) ───────
 let cm, fileUpload, databricksConnector, s3Connector;
@@ -93,6 +104,11 @@ if (s3Connector)         s3Connector.attachRoutes(app);
 function openaiHeaders() {
   return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${OPENAI_API_KEY}` };
 }
+
+function providerHeaders(token, extra = {}) {
+  return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`, ...extra };
+}
+
 function parseOpenAIAnswer(data) {
   if (!data) return null;
   if (typeof data === 'string') return data;
@@ -100,6 +116,95 @@ function parseOpenAIAnswer(data) {
   if (Array.isArray(data.choices) && data.choices[0]?.message?.content)
     return data.choices[0].message.content;
   return JSON.stringify(data);
+}
+
+function providerModel(provider, preferComplex = false, openaiModels = MODEL_CANDIDATES) {
+  if (provider === 'groq') return preferComplex ? GROQ_COMPLEX_MODEL : GROQ_MODEL;
+  if (provider === 'openai') return openaiModels;
+  return null;
+}
+
+function groqModelCandidates(preferComplex = false) {
+  const preferred = preferComplex ? GROQ_COMPLEX_MODEL : GROQ_MODEL;
+  const backup = preferComplex ? GROQ_MODEL : GROQ_COMPLEX_MODEL;
+  return [preferred, backup, 'llama-3.1-8b-instant', 'llama-3.3-70b-versatile']
+    .filter(Boolean)
+    .filter((m, i, arr) => arr.indexOf(m) === i);
+}
+
+function providerAvailable(provider) {
+  if (provider === 'groq') return !!GROQ_API_KEY;
+  if (provider === 'openai') return ENABLE_OPENAI && !!OPENAI_API_KEY;
+  return false;
+}
+
+async function callOpenAICompatible(endpoint, headers, payload) {
+  const resp = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(payload) });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const error = data?.error?.message || data?.message || `Request failed (${resp.status})`;
+    return { ok: false, error, status: resp.status };
+  }
+  return { ok: true, text: parseOpenAIAnswer(data), raw: data };
+}
+
+async function requestViaProviderManager({
+  messages,
+  max_tokens = 600,
+  temperature = 0,
+  top_p = 1,
+  seed = 42,
+  preferComplex = false,
+  openaiModels = MODEL_CANDIDATES
+}) {
+  const payload = { messages, max_tokens, temperature, top_p, seed };
+  const attempted = [];
+
+  for (const provider of PROVIDER_ORDER) {
+    if (!providerAvailable(provider)) {
+      attempted.push({ provider, error: 'Provider not configured' });
+      continue;
+    }
+
+    try {
+      if (provider === 'groq') {
+        let success = null;
+        for (const model of groqModelCandidates(preferComplex)) {
+          const out = await callOpenAICompatible(
+            GROQ_ENDPOINT,
+            providerHeaders(GROQ_API_KEY),
+            { model, ...payload }
+          );
+          if (out.ok) {
+            success = { ok: true, text: out.text, provider, model, raw: out.raw };
+            break;
+          }
+          attempted.push({ provider, model, error: out.error, status: out.status });
+        }
+        if (success) return success;
+        continue;
+      }
+
+      if (provider === 'openai') {
+        const models = providerModel('openai', preferComplex, openaiModels) || [];
+        let success = null;
+        for (const model of models) {
+          const out = await callOpenAICompatible(
+            OPENAI_ENDPOINT,
+            openaiHeaders(),
+            { model, ...payload }
+          );
+          if (out.ok) { success = { ok: true, text: out.text, provider, model, raw: out.raw }; break; }
+          attempted.push({ provider, model, error: out.error, status: out.status });
+        }
+        if (success) return success;
+      }
+    } catch (e) {
+      attempted.push({ provider, error: e.message });
+    }
+  }
+
+  return { ok: false, attempted };
 }
 function extractJson(text) {
   if (!text) return null;
@@ -111,7 +216,93 @@ function extractJson(text) {
 function extractSQLBlock(text) {
   if (!text) return null;
   const m = text.match(/```(?:sql)?\s*\n?([\s\S]*?)```/i);
-  return m ? m[1].trim() : (text.includes('SELECT') || text.includes('WITH') ? text.trim() : null);
+  if (m) return m[1].trim();
+  // Accept raw SQL even when model returns lowercase/select without code fences.
+  return /^\s*(select|with)\b/i.test(text) ? text.trim() : null;
+}
+
+function toSafeIdent(name) {
+  return String(name || '').replace(/"/g, '');
+}
+
+function pickBestTableName(allTableSchemas) {
+  const names = Object.keys(allTableSchemas || {});
+  if (!names.length) return null;
+  if (names.length === 1) return names[0];
+  const ranked = [...names].sort((a, b) => Number(allTableSchemas[b]?.rowCount || 0) - Number(allTableSchemas[a]?.rowCount || 0));
+  return ranked[0];
+}
+
+function splitColumns(schema) {
+  const cols = Array.isArray(schema?.columns) ? schema.columns : [];
+  const numericRe = /INT|DOUBLE|FLOAT|DECIMAL|REAL|NUMERIC|BIGINT|SMALLINT|TINYINT|HUGEINT|UBIGINT|UINTEGER|USMALLINT|UTINYINT/i;
+  const dateRe = /DATE|TIME|TIMESTAMP/i;
+  const all = cols.map(c => ({ name: c?.name || '', type: String(c?.type || '') })).filter(c => c.name);
+  const numeric = all.filter(c => numericRe.test(c.type)).map(c => c.name);
+  const date = all.filter(c => dateRe.test(c.type) || /date|time|month|year|quarter|week/i.test(c.name)).map(c => c.name);
+  const categorical = all
+    .filter(c => !numeric.includes(c.name) && !date.includes(c.name))
+    .map(c => c.name);
+  return { all: all.map(c => c.name), numeric, date, categorical };
+}
+
+function buildDeterministicSQLFallback(question, allTableSchemas, decodedIntent) {
+  const q = String(question || '').toLowerCase();
+  const table = (decodedIntent?.tables_needed || []).find(t => allTableSchemas?.[t]) || pickBestTableName(allTableSchemas);
+  if (!table) return null;
+
+  const schema = allTableSchemas?.[table] || {};
+  const { numeric, categorical } = splitColumns(schema);
+  const metric = decodedIntent?.primary_metric || numeric[0] || null;
+  const group = decodedIntent?.group_by?.[0] || categorical[0] || null;
+  const safeTable = toSafeIdent(table);
+  const safeMetric = metric ? toSafeIdent(metric) : null;
+  const safeGroup = group ? toSafeIdent(group) : null;
+
+  // COUNT-style questions
+  if (/\bhow many\b|\bcount\b|\bnumber of\b|\brecords\b/.test(q)) {
+    return `SELECT COUNT(*) AS row_count FROM "${safeTable}" ORDER BY row_count DESC`;
+  }
+
+  // AVG/MEAN questions
+  if (safeMetric && /\baverage\b|\bavg\b|\bmean\b/.test(q)) {
+    if (safeGroup && /\bby\b|\bper\b|\beach\b|\bgroup\b|\brank\b|\btop\b/.test(q)) {
+      return `SELECT "${safeGroup}" AS category, AVG("${safeMetric}") AS avg_value FROM "${safeTable}" WHERE "${safeGroup}" IS NOT NULL GROUP BY "${safeGroup}" ORDER BY avg_value DESC`;
+    }
+    return `SELECT AVG("${safeMetric}") AS avg_value FROM "${safeTable}" ORDER BY avg_value DESC`;
+  }
+
+  // SUM/TOTAL questions
+  if (safeMetric && /\btotal\b|\bsum\b/.test(q)) {
+    if (safeGroup && /\bby\b|\bper\b|\beach\b|\bgroup\b|\brank\b|\btop\b/.test(q)) {
+      return `SELECT "${safeGroup}" AS category, SUM("${safeMetric}") AS total_value FROM "${safeTable}" WHERE "${safeGroup}" IS NOT NULL GROUP BY "${safeGroup}" ORDER BY total_value DESC`;
+    }
+    return `SELECT SUM("${safeMetric}") AS total_value FROM "${safeTable}" ORDER BY total_value DESC`;
+  }
+
+  // MAX / highest
+  if (safeMetric && /\bmax\b|\bhighest\b|\btop\b|\bbest\b/.test(q)) {
+    if (safeGroup) {
+      return `SELECT "${safeGroup}" AS category, MAX("${safeMetric}") AS max_value FROM "${safeTable}" WHERE "${safeGroup}" IS NOT NULL GROUP BY "${safeGroup}" ORDER BY max_value DESC LIMIT 10`;
+    }
+    return `SELECT MAX("${safeMetric}") AS max_value FROM "${safeTable}" ORDER BY max_value DESC`;
+  }
+
+  // MIN / lowest
+  if (safeMetric && /\bmin\b|\blowest\b|\bsmallest\b|\bworst\b/.test(q)) {
+    if (safeGroup) {
+      return `SELECT "${safeGroup}" AS category, MIN("${safeMetric}") AS min_value FROM "${safeTable}" WHERE "${safeGroup}" IS NOT NULL GROUP BY "${safeGroup}" ORDER BY min_value ASC LIMIT 10`;
+    }
+    return `SELECT MIN("${safeMetric}") AS min_value FROM "${safeTable}" ORDER BY min_value ASC`;
+  }
+
+  // Generic grouped leaderboard
+  if (safeMetric && safeGroup) {
+    return `SELECT "${safeGroup}" AS category, AVG("${safeMetric}") AS value FROM "${safeTable}" WHERE "${safeGroup}" IS NOT NULL GROUP BY "${safeGroup}" ORDER BY value DESC LIMIT 20`;
+  }
+
+  // Last-resort deterministic query.
+  return `SELECT * FROM "${safeTable}" ORDER BY 1 LIMIT 50`;
 }
 function isComplexQuestion(q) {
   const kw = ['trend','over time','compare','vs','versus','consistent','variable','outlier',
@@ -582,31 +773,31 @@ app.post('/api/decode-intent', async (req, res) => {
       ? `\n\nCONVERSATION CONTEXT (recent turns):\n${JSON.stringify(conversationContext.slice(-6), null, 2)}`
       : '';
 
-    const models = isComplexQuestion(question)
+    const preferComplex = isComplexQuestion(question);
+    const models = preferComplex
       ? [COMPLEX_MODEL, ...MODEL_CANDIDATES.filter(m => m !== COMPLEX_MODEL)]
       : MODEL_CANDIDATES;
 
-    for (const model of models) {
-      try {
-        const resp = await fetch(OPENAI_ENDPOINT, {
-          method: 'POST', headers: openaiHeaders(),
-          body: JSON.stringify({
-            model, max_tokens: 800, temperature: 0, top_p: 1, seed: 42,
-            messages: [
-              { role: 'system', content: DECODE_INTENT_SYSTEM + schemaCtx + rulesCtx + relCtx + convoCtx },
-              { role: 'user',   content: `Question: ${question}` }
-            ]
-          })
-        });
-        const data = await resp.json();
-        if (!resp.ok) { const m = data?.error?.message || ''; if (m.toLowerCase().includes('model')) continue; return res.status(resp.status).json({ error: m }); }
-        if (data.system_fingerprint) console.log('[LLM] system_fingerprint:', data.system_fingerprint, 'model:', model);
-        const decoded = extractJson(parseOpenAIAnswer(data));
-        if (!decoded) return res.json({ decoded: null, error: 'Could not parse intent JSON' });
-        return res.json({ decoded, model });
-      } catch (_) {}
+    const out = await requestViaProviderManager({
+      max_tokens: 800,
+      temperature: 0,
+      top_p: 1,
+      seed: 42,
+      preferComplex,
+      openaiModels: models,
+      messages: [
+        { role: 'system', content: DECODE_INTENT_SYSTEM + schemaCtx + rulesCtx + relCtx + convoCtx },
+        { role: 'user', content: `Question: ${question}` }
+      ]
+    });
+
+    if (!out.ok) {
+      return res.status(500).json({ error: 'Could not decode intent.', providerAttempts: out.attempted || [] });
     }
-    return res.status(500).json({ error: 'Could not decode intent.' });
+
+    const decoded = extractJson(out.text);
+    if (!decoded) return res.json({ decoded: null, error: 'Could not parse intent JSON', provider: out.provider, model: out.model });
+    return res.json({ decoded, provider: out.provider, model: out.model });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -674,36 +865,59 @@ app.post('/api/generate-code', async (req, res) => {
     const schemas = allTableSchemas || (schemaJson ? { main: { columns: [], schemaJson } } : null);
     const sysPrompt = buildSQLCodeGenPrompt(schemas || {}, relationships || [], decodedIntent || null);
 
-    const models = isComplexQuestion(question)
+    const preferComplex = isComplexQuestion(question);
+    const models = preferComplex
       ? [COMPLEX_MODEL, ...MODEL_CANDIDATES.filter(m => m !== COMPLEX_MODEL)]
       : MODEL_CANDIDATES;
 
-    for (const model of models) {
-      try {
-        const messages = [];
-        if (previousCode && errorMessage) {
-          messages.push({ role: 'user',      content: `Generate SQL to answer: ${question}` });
-          messages.push({ role: 'assistant', content: '```sql\n' + previousCode + '\n```' });
-          messages.push({ role: 'user',      content: `SQL error: "${errorMessage}". Fix and return only a corrected \`\`\`sql block.` });
-        } else {
-          messages.push({ role: 'user', content: `Generate SQL to answer: ${question}` });
-        }
-
-        const resp = await fetch(OPENAI_ENDPOINT, {
-          method: 'POST', headers: openaiHeaders(),
-          body: JSON.stringify({ model, max_tokens: 1800, temperature: 0, top_p: 1, seed: 42,
-            messages: [{ role: 'system', content: sysPrompt }, ...messages] })
-        });
-        const data = await resp.json();
-        if (!resp.ok) { const m = data?.error?.message || ''; if (m.toLowerCase().includes('model')) continue; return res.status(resp.status).json({ error: m }); }
-        if (data.system_fingerprint) console.log('[LLM] system_fingerprint:', data.system_fingerprint, 'model:', model);
-        const raw  = parseOpenAIAnswer(data);
-        const code = extractSQLBlock(raw);
-        if (!code) return res.json({ code: null, error: 'No SQL block in LLM response', raw });
-        return res.json({ code, model, type: 'sql' });
-      } catch (_) {}
+    const messages = [];
+    if (previousCode && errorMessage) {
+      messages.push({ role: 'user', content: `Generate SQL to answer: ${question}` });
+      messages.push({ role: 'assistant', content: '```sql\n' + previousCode + '\n```' });
+      messages.push({ role: 'user', content: `SQL error: "${errorMessage}". Fix and return only a corrected \`\`\`sql block.` });
+    } else {
+      messages.push({ role: 'user', content: `Generate SQL to answer: ${question}` });
     }
-    return res.status(500).json({ error: 'Could not generate SQL.' });
+
+    const out = await requestViaProviderManager({
+      max_tokens: 1800,
+      temperature: 0,
+      top_p: 1,
+      seed: 42,
+      preferComplex,
+      openaiModels: models,
+      messages: [{ role: 'system', content: sysPrompt }, ...messages]
+    });
+
+    if (!out.ok) {
+      const fallbackCode = buildDeterministicSQLFallback(question, schemas || {}, decodedIntent || null);
+      if (fallbackCode) {
+        return res.json({
+          code: fallbackCode,
+          model: 'fallback-local',
+          provider: 'rule-engine',
+          type: 'sql',
+          fallbackReason: 'All providers failed'
+        });
+      }
+      return res.status(500).json({ error: 'Could not generate SQL.', providerAttempts: out.attempted || [] });
+    }
+
+    const code = extractSQLBlock(out.text);
+    if (!code) {
+      const fallbackCode = buildDeterministicSQLFallback(question, schemas || {}, decodedIntent || null);
+      if (fallbackCode) {
+        return res.json({
+          code: fallbackCode,
+          model: 'fallback-local',
+          provider: 'rule-engine',
+          type: 'sql',
+          fallbackReason: 'Provider returned non-SQL output'
+        });
+      }
+      return res.json({ code: null, error: 'No SQL block in LLM response', raw: out.text, provider: out.provider, model: out.model });
+    }
+    return res.json({ code, model: out.model, provider: out.provider, type: 'sql' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -752,57 +966,50 @@ app.post('/api/interpret', async (req, res) => {
       : '';
     const sqlCtx = (sql || executedCode) ? `\nSQL USED:\n${sql || executedCode}` : '';
 
-    for (const model of MODEL_CANDIDATES) {
-      try {
-        const resp = await fetch(OPENAI_ENDPOINT, {
-          method: 'POST', headers: openaiHeaders(),
-          body: JSON.stringify({
-            model, max_tokens: 700, temperature: 0.2, top_p: 0.9, seed: 42,
-            messages: [
-              { role: 'system', content: NARRATE_SYSTEM },
-              { role: 'user',   content: `QUESTION: ${question}${intentCtx}${sqlCtx}\n\nRESULT: ${JSON.stringify(result)}` }
-            ]
-          })
-        });
-        const data = await resp.json();
-        if (!resp.ok) { const m = data?.error?.message || ''; if (m.toLowerCase().includes('model')) continue; return res.status(resp.status).json({ error: m }); }
-        let answer = parseOpenAIAnswer(data) || '';
+    let out = await requestViaProviderManager({
+      max_tokens: 700,
+      temperature: 0.2,
+      top_p: 0.9,
+      seed: 42,
+      preferComplex: false,
+      openaiModels: MODEL_CANDIDATES,
+      messages: [
+        { role: 'system', content: NARRATE_SYSTEM },
+        { role: 'user', content: `QUESTION: ${question}${intentCtx}${sqlCtx}\n\nRESULT: ${JSON.stringify(result)}` }
+      ]
+    });
 
-        if (!hasAllLewSections(answer)) {
-          // Force one repair pass to guarantee the six-section contract.
-          const fixResp = await fetch(OPENAI_ENDPOINT, {
-            method: 'POST', headers: openaiHeaders(),
-            body: JSON.stringify({
-              model, max_tokens: 700, temperature: 0, top_p: 1, seed: 42,
-              messages: [
-                {
-                  role: 'system',
-                  content: `Rewrite content into EXACTLY these six markers with non-empty content:\n${LEW_SECTIONS.map(s => `##${s}##`).join('\n')}\nReturn plain text only.`
-                },
-                {
-                  role: 'user',
-                  content: `Question: ${question}${intentCtx}${sqlCtx}\n\nResult: ${JSON.stringify(result)}\n\nDraft:\n${answer}`
-                }
-              ]
-            })
-          });
-          const fixData = await fixResp.json().catch(() => null);
-          if (fixResp.ok && fixData) {
-            const repaired = parseOpenAIAnswer(fixData) || '';
-            if (hasAllLewSections(repaired)) answer = repaired;
+    let answer = out.ok ? String(out.text || '') : '';
+
+    if (out.ok && !hasAllLewSections(answer)) {
+      const repair = await requestViaProviderManager({
+        max_tokens: 700,
+        temperature: 0,
+        top_p: 1,
+        seed: 42,
+        preferComplex: false,
+        openaiModels: MODEL_CANDIDATES,
+        messages: [
+          {
+            role: 'system',
+            content: `Rewrite content into EXACTLY these six markers with non-empty content:\n${LEW_SECTIONS.map(s => `##${s}##`).join('\n')}\nReturn plain text only.`
+          },
+          {
+            role: 'user',
+            content: `Question: ${question}${intentCtx}${sqlCtx}\n\nResult: ${JSON.stringify(result)}\n\nDraft:\n${answer}`
           }
-        }
-
-        if (!hasAllLewSections(answer)) {
-          answer = makeLewFallbackNarrative(question, result);
-        } else {
-          answer = renderLewSections(parseLewSectionsText(answer));
-        }
-
-        return res.json({ answer, model });
-      } catch (_) {}
+        ]
+      });
+      if (repair.ok && hasAllLewSections(repair.text || '')) answer = String(repair.text || '');
     }
-    return res.json({ answer: makeLewFallbackNarrative(question, result), model: 'fallback' });
+
+    if (!hasAllLewSections(answer)) {
+      answer = makeLewFallbackNarrative(question, result);
+      return res.json({ answer, model: 'fallback-local', provider: out.ok ? out.provider : 'rule-engine' });
+    }
+
+    answer = renderLewSections(parseLewSectionsText(answer));
+    return res.json({ answer, model: out.model, provider: out.provider });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -815,23 +1022,21 @@ app.post('/api/generate-executive-summary', async (req, res) => {
     const system = 'You are an executive BI writer. Produce a concise, decision-ready summary in plain text with exactly three parts: Key Finding, Business Impact, Next Best Action. Keep under 140 words.';
     const user = `Question: ${question}\nSections: ${JSON.stringify(sections, null, 2)}\nSQL: ${sql || ''}\nRows Preview: ${JSON.stringify(rowsPreview || [], null, 2)}`;
 
-    for (const model of MODEL_CANDIDATES) {
-      try {
-        const resp = await fetch(OPENAI_ENDPOINT, {
-          method: 'POST', headers: openaiHeaders(),
-          body: JSON.stringify({
-            model, max_tokens: 260, temperature: 0.2, top_p: 0.9, seed: 42,
-            messages: [
-              { role: 'system', content: system },
-              { role: 'user', content: user }
-            ]
-          })
-        });
-        const data = await resp.json();
-        if (!resp.ok) continue;
-        const summary = normalizeExecutiveSummary(parseOpenAIAnswer(data), sections);
-        if (summary) return res.json({ summary, model });
-      } catch (_) {}
+    const out = await requestViaProviderManager({
+      max_tokens: 260,
+      temperature: 0.2,
+      top_p: 0.9,
+      seed: 42,
+      preferComplex: false,
+      openaiModels: MODEL_CANDIDATES,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user }
+      ]
+    });
+    if (out.ok) {
+      const summary = normalizeExecutiveSummary(out.text, sections);
+      if (summary) return res.json({ summary, provider: out.provider, model: out.model });
     }
 
     const fallback = normalizeExecutiveSummary([
@@ -839,7 +1044,7 @@ app.post('/api/generate-executive-summary', async (req, res) => {
       'Business Impact: ' + (sections.businessImpact || sections.insight || 'Impact could not be determined.'),
       'Next Best Action: ' + (sections.recommendedAction || 'Validate assumptions, then monitor KPI trend weekly.')
     ].join('\n'), sections);
-    res.json({ summary: fallback, model: 'fallback' });
+    res.json({ summary: fallback, model: 'fallback-local' });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -893,6 +1098,79 @@ app.post('/api/export-report', (req, res) => {
 // ════════════════════════════════════════════════════════════════════════════════
 // DATA STORY (Dashboard narrative)
 // ════════════════════════════════════════════════════════════════════════════════
+function buildFallbackStory(tableSchemas, sampleData) {
+  const tables = Object.entries(tableSchemas || {});
+  const tableCount = tables.length;
+  const totalRows = tables.reduce((sum, [, t]) => sum + Number(t?.rowCount || 0), 0);
+
+  const numericTypeRe = /INT|DOUBLE|FLOAT|DECIMAL|REAL|NUMERIC|BIGINT|SMALLINT|TINYINT|HUGEINT|UBIGINT|UINTEGER|USMALLINT|UTINYINT/i;
+  const dateTypeRe = /DATE|TIME|TIMESTAMP/i;
+
+  let numericCols = 0;
+  let dateCols = 0;
+  let categoricalCols = 0;
+  const sourceSet = new Set();
+
+  for (const [, meta] of tables) {
+    sourceSet.add((meta?.source || 'file').toLowerCase());
+    for (const col of (meta?.columns || [])) {
+      const type = String(col?.type || '');
+      const name = String(col?.name || '');
+      if (numericTypeRe.test(type)) numericCols++;
+      else if (dateTypeRe.test(type) || /date|time|month|year|quarter|week/i.test(name)) dateCols++;
+      else categoricalCols++;
+    }
+  }
+
+  const sourceSummary = sourceSet.size > 1 ? 'multiple connected sources' : (sourceSet.values().next().value || 'file source');
+  const rowsText = totalRows.toLocaleString();
+
+  const headline = tableCount
+    ? `Data loaded: ${tableCount} table${tableCount > 1 ? 's' : ''}, ${rowsText} rows ready for analysis.`
+    : 'No tables are loaded yet for story generation.';
+
+  const narrative = [
+    tableCount
+      ? `The dashboard is operating on ${tableCount} table${tableCount > 1 ? 's' : ''} from ${sourceSummary}, with ${rowsText} total records. The detected model currently includes ${numericCols} numeric field${numericCols !== 1 ? 's' : ''}, ${categoricalCols} categorical field${categoricalCols !== 1 ? 's' : ''}, and ${dateCols} time-related field${dateCols !== 1 ? 's' : ''}.`
+      : 'Load one or more datasets to generate an executive data story and automated findings.',
+    tableCount
+      ? 'Story generation switched to local fallback mode because the external LLM endpoint is unavailable or rate-limited. Core charting, SQL analytics, and dashboard rendering remain available.'
+      : 'Once data is loaded, the dashboard will automatically create KPI cards, chart candidates, and a narrative summary.'
+  ].join('\n\n');
+
+  const alerts = [];
+  if (!tableCount) {
+    alerts.push({
+      severity: 'WARNING',
+      finding: 'No data tables are currently loaded.',
+      action: 'Upload a CSV/Excel/Parquet/JSON file or connect Databricks/S3 before refreshing the dashboard.'
+    });
+  }
+  if (tableCount && !dateCols) {
+    alerts.push({
+      severity: 'INFO',
+      finding: 'No explicit date/time fields detected in the loaded schema.',
+      action: 'Add or map a date column to improve trend and forecast analysis quality.'
+    });
+  }
+  if (tableCount && totalRows < 100) {
+    alerts.push({
+      severity: 'WARNING',
+      finding: `Dataset volume is low (${rowsText} rows), so patterns may be unstable.`,
+      action: 'Consider loading a longer time horizon or additional records before taking strategic action.'
+    });
+  }
+  if (tableCount && alerts.length < 3) {
+    alerts.push({
+      severity: 'INFO',
+      finding: 'Fallback narrative mode is active due to LLM unavailability.',
+      action: 'Re-enable an LLM provider to restore richer AI-written storytelling.'
+    });
+  }
+
+  return { headline, narrative, alerts: alerts.slice(0, 3) };
+}
+
 app.post('/api/generate-story', async (req, res) => {
   try {
     const { tableSchemas, sampleData } = req.body;
@@ -915,20 +1193,27 @@ ${JSON.stringify(tableSchemas, null, 2)}
 SAMPLE DATA (first 5 rows per table):
 ${JSON.stringify(sampleData || {}, null, 2)}`;
 
-    for (const model of [COMPLEX_MODEL, ...MODEL_CANDIDATES]) {
-      try {
-        const resp = await fetch(OPENAI_ENDPOINT, {
-          method: 'POST', headers: openaiHeaders(),
-          body: JSON.stringify({ model, max_tokens: 900, temperature: 0.3, top_p: 0.9, seed: 42,
-            messages: [{ role: 'user', content: prompt }] })
-        });
-        const data = await resp.json();
-        if (!resp.ok) continue;
-        const story = extractJson(parseOpenAIAnswer(data));
-        if (story) return res.json(story);
-      } catch (_) {}
+    const out = await requestViaProviderManager({
+      max_tokens: 900,
+      temperature: 0.3,
+      top_p: 0.9,
+      seed: 42,
+      preferComplex: true,
+      openaiModels: [COMPLEX_MODEL, ...MODEL_CANDIDATES],
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    if (out.ok) {
+      const story = extractJson(out.text);
+      if (story) return res.json({ ...story, provider: out.provider, model: out.model });
     }
-    return res.status(500).json({ error: 'Could not generate story.' });
+
+    const fallbackStory = buildFallbackStory(tableSchemas, sampleData || {});
+    return res.json({
+      ...fallbackStory,
+      model: 'fallback-local',
+      fallbackReason: out.ok ? 'Provider returned non-JSON payload' : ((out.attempted || []).map(a => `${a.provider}:${a.error}`).join(' | ') || 'LLM unavailable')
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -955,32 +1240,25 @@ app.post('/api/chart-summary', async (req, res) => {
 
     const user = `Chart metadata: ${JSON.stringify(chart || {})}\nPreview points: ${JSON.stringify(preview || {})}`;
 
-    for (const model of MODEL_CANDIDATES) {
-      try {
-        const resp = await fetch(OPENAI_ENDPOINT, {
-          method: 'POST',
-          headers: openaiHeaders(),
-          body: JSON.stringify({
-            model,
-            max_tokens: 40,
-            temperature: 0.2,
-            top_p: 0.9,
-            seed: 42,
-            messages: [
-              { role: 'system', content: system },
-              { role: 'user', content: user }
-            ]
-          })
-        });
+    const out = await requestViaProviderManager({
+      max_tokens: 40,
+      temperature: 0.2,
+      top_p: 0.9,
+      seed: 42,
+      preferComplex: false,
+      openaiModels: MODEL_CANDIDATES,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user }
+      ]
+    });
 
-        const data = await resp.json();
-        if (!resp.ok) continue;
-        const summary = normalizeChartSummary(parseOpenAIAnswer(data), fallback, chart);
-        if (summary) return res.json({ summary, model });
-      } catch (_) {}
+    if (out.ok) {
+      const summary = normalizeChartSummary(out.text, fallback, chart);
+      if (summary) return res.json({ summary, provider: out.provider, model: out.model });
     }
 
-    return res.json({ summary: normalizeChartSummary('', fallback, chart), model: 'fallback' });
+    return res.json({ summary: normalizeChartSummary('', fallback, chart), model: 'fallback-local' });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -995,21 +1273,20 @@ app.post('/api/ask', async (req, res) => {
   try {
     const { question, summary } = req.body;
     if (!question || !summary) return res.status(400).json({ error: 'Missing question or summary.' });
-    for (const model of MODEL_CANDIDATES) {
-      try {
-        const resp = await fetch(OPENAI_ENDPOINT, {
-          method: 'POST', headers: openaiHeaders(),
-          body: JSON.stringify({ model, max_tokens: 1000, messages: [
-            { role: 'system', content: 'You are a sharp data analytics assistant. Answer concisely using the provided data. Lead with the key insight. Use numbers and percentages. Keep under 180 words. Plain text only.' },
-            { role: 'user',   content: `Data summary:\n${summary}\n\nQuestion: ${question}` }
-          ]})
-        });
-        const data = await resp.json();
-        if (!resp.ok) continue;
-        return res.json({ answer: parseOpenAIAnswer(data), model });
-      } catch (_) {}
-    }
-    return res.status(500).json({ error: 'No model available.' });
+    const out = await requestViaProviderManager({
+      max_tokens: 1000,
+      temperature: 0.2,
+      top_p: 0.9,
+      seed: 42,
+      preferComplex: isComplexQuestion(question),
+      openaiModels: MODEL_CANDIDATES,
+      messages: [
+        { role: 'system', content: 'You are a sharp data analytics assistant. Answer concisely using the provided data. Lead with the key insight. Use numbers and percentages. Keep under 180 words. Plain text only.' },
+        { role: 'user', content: `Data summary:\n${summary}\n\nQuestion: ${question}` }
+      ]
+    });
+    if (out.ok) return res.json({ answer: out.text, provider: out.provider, model: out.model });
+    return res.status(500).json({ error: 'No model available.', providerAttempts: out.attempted || [] });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1019,21 +1296,19 @@ app.post('/api/summarize-dataset', async (req, res) => {
     const { schemaProfile, stats, datasetName } = req.body;
     if (!schemaProfile) return res.status(400).json({ error: 'Missing schemaProfile.' });
     const statsCtx = stats ? `\n\nKEY STATISTICS:\n${JSON.stringify(stats, null, 2)}` : '';
-    for (const model of MODEL_CANDIDATES) {
-      try {
-        const resp = await fetch(OPENAI_ENDPOINT, {
-          method: 'POST', headers: openaiHeaders(),
-          body: JSON.stringify({ model, max_tokens: 220, messages: [
-            { role: 'system', content: 'You are a senior data analyst writing an executive summary for a BI dashboard. Write exactly 2-3 sentences describing the dataset\'s overall health, key metric trends, and notable patterns. Be specific with numbers. Plain text only, no markdown.' },
-            { role: 'user',   content: `Dataset: "${datasetName || 'Dataset'}"\n\nSCHEMA:\n${typeof schemaProfile === 'string' ? schemaProfile : JSON.stringify(schemaProfile, null, 2)}${statsCtx}\n\nWrite the executive summary now.` }
-          ]})
-        });
-        const data = await resp.json();
-        if (!resp.ok) continue;
-        const summary = parseOpenAIAnswer(data);
-        if (summary) return res.json({ summary });
-      } catch (_) {}
-    }
+    const out = await requestViaProviderManager({
+      max_tokens: 220,
+      temperature: 0.2,
+      top_p: 0.9,
+      seed: 42,
+      preferComplex: false,
+      openaiModels: MODEL_CANDIDATES,
+      messages: [
+        { role: 'system', content: 'You are a senior data analyst writing an executive summary for a BI dashboard. Write exactly 2-3 sentences describing the dataset\'s overall health, key metric trends, and notable patterns. Be specific with numbers. Plain text only, no markdown.' },
+        { role: 'user', content: `Dataset: "${datasetName || 'Dataset'}"\n\nSCHEMA:\n${typeof schemaProfile === 'string' ? schemaProfile : JSON.stringify(schemaProfile, null, 2)}${statsCtx}\n\nWrite the executive summary now.` }
+      ]
+    });
+    if (out.ok && out.text) return res.json({ summary: out.text, provider: out.provider, model: out.model });
     return res.status(500).json({ error: 'Could not generate summary.' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
