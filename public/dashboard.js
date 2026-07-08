@@ -966,7 +966,7 @@ async function fillChartSummary(summaryId, meta, option) {
   }
 }
 
-function buildChartCard({ container, chartId, title, sub, option, summaryMeta, delayIndex }) {
+function buildChartCard({ container, chartId, title, sub, option, summaryMeta, delayIndex, lockDefaultOnLoad = false }) {
   const summaryId = `${chartId}_summary`;
   const exportId = `${chartId}_export`;
   const sourceId = `${chartId}_source`;
@@ -1033,7 +1033,8 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
     availableTypes,
     sourceLoading: false,
     sourceLoaded: false,
-    sourceError: ''
+    sourceError: '',
+    lockDefaultOnLoad: !!lockDefaultOnLoad
   };
 
   const convertEl = document.getElementById(convertId);
@@ -1050,6 +1051,11 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
   const opt = option;
   setTimeout(() => {
     if (!tryInitChart(cid, opt)) pendingCharts.push({ id: cid, option: opt });
+    // For AI-selected visuals, keep the suggested chart as the first-load default.
+    if (chartMetaById[cid]?.lockDefaultOnLoad) {
+      _syncChartTypeControls(chartMetaById[cid], 'auto');
+      return;
+    }
     const preferredType = _getChartTypePreference(prefKey);
     const validPreferredType = availableTypes.includes(preferredType) ? preferredType : 'auto';
     if (validPreferredType !== preferredType) _setChartTypePreference(prefKey, validPreferredType);
@@ -1628,7 +1634,8 @@ async function renderSmartCharts(tableNames, containerId, maxCharts, samplesForF
     seen.add(key);
   });
 
-  if (selected.length < maxCharts) {
+  // Only use local fallback when recommender returns nothing.
+  if (!aiRecommended.length && selected.length < maxCharts) {
     deterministicTopVisuals(allDefs, maxCharts).forEach(def => {
       if (selected.length >= maxCharts) return;
       if (seen.has(def.key)) return;
@@ -1659,7 +1666,8 @@ async function renderSmartCharts(tableNames, containerId, maxCharts, samplesForF
         xCol: def.xCol,
         yCol: def.yCol
       },
-      delayIndex: count
+      delayIndex: count,
+      lockDefaultOnLoad: true
     });
 
     count++;
