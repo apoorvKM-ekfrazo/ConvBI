@@ -3,22 +3,22 @@
    Palette: Fuchsian (#6F42C1) + Aquamarine Blue (#007BFF)
 ═══════════════════════════════════════════ */
 :root {
-  --bg-primary:    #FFFFFF;
+  --bg-primary:    #F7F8FA;
   --bg-card:       #FFFFFF;
-  --bg-sidebar:    #F8FAFC;
-  --bg-hover:      #F3F4F6;
-  --border:        #E5E7EB;
-  --border-lite:   #F3F4F6;
+  --bg-sidebar:    #F1F4F9;
+  --bg-hover:      #EEF2F7;
+  --border:        #E6E8EC;
+  --border-lite:   #EFF2F6;
 
   /* Brand palette */
-  --accent-purple: #6F42C1;   /* Fuchsian — primary brand, active states */
-  --accent-blue:   #007BFF;   /* Blue — secondary brand, links */
+  --accent-purple: #4C5FF0;   /* Brand primary */
+  --accent-blue:   #3B82F6;   /* Info accents */
   --accent-cyan1:  #00CCCC;   /* Supporting Cyan 1 */
-  --accent-cyan2:  #0DCAF0;   /* Supporting Cyan 2 */
-  --accent-cyan3:  #17A2B8;   /* Supporting Cyan 3 */
-  --accent-amber:  #D97706;
-  --accent-red:    #DC2626;
-  --accent-teal:   #059669;
+  --accent-cyan2:  #0EA5E9;   /* Supporting Cyan 2 */
+  --accent-cyan3:  #14B8A6;   /* AI accent */
+  --accent-amber:  #E8A33D;
+  --accent-red:    #E4574C;
+  --accent-teal:   #1DA36C;
 
   --text-primary:  #111827;
   --text-secondary:#4B5563;
@@ -469,6 +469,7 @@ body.sidebar-collapsed .db-float-toggle { left: var(--sidebar-wc); }
   font-family: 'Space Grotesk', sans-serif;
   font-size: clamp(24px, 2.2vw, 34px);
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
   color: var(--text-primary);
   line-height: 1.1;
   text-align: left;

@@ -12,6 +12,7 @@ const answerPayloadStore = {}; // cardId -> payload for exports
 let isLoadingDynamicChips = false;
 let currentFollowupPrompts = [];
 const askedFollowupPromptSet = new Set();
+let tableLibraryView = localStorage.getItem('convbi_table_library_view') || 'grid';
 
 const WORKFLOW_LABELS = {
   6: 'User Asks Business Question',
@@ -27,11 +28,13 @@ let dbBrowserState = { catalog: null, schema: null, table: null };
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(name) {
-  document.querySelectorAll('.tab').forEach((t, i) => {
-    const tabs = ['input','qa'];  // 'dashboard' tab is now a link — skip index 1
-    // Map button index to tab ids
-    const btnTabs = ['input','dashboard','qa'];
-    t.classList.toggle('active', btnTabs[i] === name);
+  if ((name === 'qa' || name === 'dashboard') && !Object.keys(loadedTables || {}).length) {
+    showError('Load a table to begin.');
+    return;
+  }
+
+  document.querySelectorAll('[data-nav-tab]').forEach(t => {
+    t.classList.toggle('active', t.getAttribute('data-nav-tab') === name);
   });
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.getElementById(name)?.classList.add('active');
@@ -39,6 +42,56 @@ function switchTab(name) {
     refreshTableContextBar();
     loadDynamicQuestionChips();
   }
+}
+
+function handleLockedNav(event, el) {
+  const hasData = Object.keys(loadedTables || {}).length > 0;
+  if (hasData) return true;
+  if (event) event.preventDefault();
+  const reason = el?.getAttribute('data-locked-title') || 'Load a table to begin.';
+  showError(reason);
+  return false;
+}
+
+function syncAppNavigationState() {
+  const hasData = Object.keys(loadedTables || {}).length > 0;
+  const askNav = document.getElementById('askNav');
+  const dashNav = document.getElementById('dashboardNav');
+  [askNav, dashNav].forEach(el => {
+    if (!el) return;
+    el.classList.toggle('nav-lock', !hasData);
+    if (!hasData) {
+      el.setAttribute('aria-disabled', 'true');
+      el.setAttribute('title', 'Load a table to begin');
+    } else {
+      el.removeAttribute('aria-disabled');
+      el.removeAttribute('title');
+    }
+  });
+}
+
+function updateLoadedTablesBadge() {
+  const names = Object.keys(loadedTables || {});
+  const badge = document.getElementById('tablesLoadedBadge');
+  const ctx = document.getElementById('activeTablesContext');
+  if (badge) badge.textContent = `Tables loaded: ${names.length}`;
+  if (ctx) {
+    ctx.textContent = names.length ? `Active tables: ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` +${names.length - 3}` : ''}` : 'Active tables: none';
+  }
+}
+
+function setTableLibraryView(mode) {
+  tableLibraryView = mode === 'list' ? 'list' : 'grid';
+  localStorage.setItem('convbi_table_library_view', tableLibraryView);
+  const list = document.getElementById('tableLibraryList');
+  const gridBtn = document.getElementById('tableViewGridBtn');
+  const listBtn = document.getElementById('tableViewListBtn');
+  if (list) {
+    list.classList.toggle('table-library-grid', tableLibraryView === 'grid');
+    list.classList.toggle('table-library-list', tableLibraryView === 'list');
+  }
+  if (gridBtn) gridBtn.classList.toggle('active', tableLibraryView === 'grid');
+  if (listBtn) listBtn.classList.toggle('active', tableLibraryView === 'list');
 }
 
 function getInitialTabFromUrl() {
@@ -62,6 +115,46 @@ function switchSourceTab(name) {
   document.getElementById('s3Panel').style.display         = name === 's3'         ? '' : 'none';
   if (name === 'databricks') initDatabricksBrowser();
   if (name === 's3') initS3Panel();
+}
+
+function renderUploadQueue() {
+  const queueWrap = document.getElementById('uploadQueue');
+  const queueList = document.getElementById('uploadQueueList');
+  if (!queueWrap || !queueList) return;
+  if (!pendingFiles.length) {
+    queueWrap.style.display = 'none';
+    return;
+  }
+
+  queueWrap.style.display = '';
+  queueList.innerHTML = pendingFiles.map((f, idx) => `
+    <div class="upload-row" id="uploadRow_${idx}">
+      <div class="upload-meta">
+        <span class="upload-state-icon" id="uploadState_${idx}">&#9711;</span>
+        <span class="upload-name">${escapeHtml(f.name)}</span>
+        <span class="upload-size">${(f.size / 1024).toFixed(1)} KB</span>
+      </div>
+      <div class="upload-progress"><span id="uploadBar_${idx}" style="width:0%"></span></div>
+    </div>
+  `).join('');
+}
+
+function setUploadVisualState(state) {
+  pendingFiles.forEach((_, idx) => {
+    const icon = document.getElementById(`uploadState_${idx}`);
+    const bar = document.getElementById(`uploadBar_${idx}`);
+    if (!icon || !bar) return;
+    if (state === 'uploading') {
+      icon.innerHTML = '&#8635;';
+      bar.style.width = '60%';
+    } else if (state === 'done') {
+      icon.innerHTML = '&#10003;';
+      bar.style.width = '100%';
+    } else if (state === 'error') {
+      icon.innerHTML = '&#9888;';
+      bar.style.width = '100%';
+    }
+  });
 }
 
 // ── Notifications ─────────────────────────────────────────────────────────────
@@ -102,6 +195,8 @@ function syncQAAvailability() {
   }
   if (askBtn) askBtn.disabled = !hasData;
   if (!hasData && followupRail) followupRail.style.display = 'none';
+
+  syncAppNavigationState();
 
   return hasData;
 }
@@ -343,6 +438,7 @@ function onDrop(e)      { e.preventDefault(); document.getElementById('dropZone'
 function handleFileInputChange(files) {
   if (!files || !files.length) return;
   pendingFiles = Array.from(files);
+  renderUploadQueue();
   const loadBtn = document.getElementById('loadBtn');
   if (loadBtn) loadBtn.disabled = false;
   const names = pendingFiles.map(f => f.name).join(', ');
@@ -357,7 +453,7 @@ function handleFileInputChange(files) {
     document.getElementById('previewSection').style.display = '';
     document.getElementById('previewTable').innerHTML = `<tbody><tr><td colspan="4" style="padding:1rem;color:var(--t2)">${escapeHtml(names)}</td></tr></tbody>`;
     document.getElementById('rowCount').textContent = pendingFiles.length + ' file(s) staged for upload';
-    document.getElementById('loadBtn').textContent  = 'Upload ' + pendingFiles.length + ' file(s)';
+    document.getElementById('loadBtn').textContent  = 'Load ' + pendingFiles.length + ' files into analytics';
   }
 }
 
@@ -372,7 +468,7 @@ function showCSVPreview(text, filename) {
     <tbody>${rows.map(r=>`<tr>${show.map((_,i)=>`<td>${escapeHtml(r[i]||'')}</td>`).join('')}${headers.length>10?'<td>…</td>':''}</tr>`).join('')}</tbody>`;
   document.getElementById('previewSection').style.display = '';
   document.getElementById('rowCount').textContent = `${filename} • ${lines.length - 1} rows previewed`;
-  document.getElementById('loadBtn').textContent = 'Upload ' + pendingFiles.length + ' file(s)';
+  document.getElementById('loadBtn').textContent = 'Load ' + pendingFiles.length + ' files into analytics';
 }
 
 function splitCSVLine(line, delim = ',') {
@@ -394,6 +490,7 @@ async function uploadStagedFiles() {
   }
   const btn = document.getElementById('loadBtn');
   btn.disabled = true; btn.textContent = 'Uploading…';
+  setUploadVisualState('uploading');
 
   const fd = new FormData();
   pendingFiles.forEach(f => fd.append('files', f));
@@ -403,8 +500,12 @@ async function uploadStagedFiles() {
     const data = await res.json();
     if (!res.ok) { showError(data.error || 'Upload failed.'); return; }
 
+    setUploadVisualState('done');
+
     pendingFiles = [];
     document.getElementById('previewSection').style.display = 'none';
+    const q = document.getElementById('uploadQueue');
+    if (q) q.style.display = 'none';
 
     const count = data.tables.length;
     showSuccess(`${count} table${count>1?'s':''} loaded! Opening dashboard…`);
@@ -413,10 +514,11 @@ async function uploadStagedFiles() {
     // Open dashboard in new tab after a short delay so the success message is seen
     setTimeout(() => window.open('/dashboard', '_blank'), 800);
   } catch (e) {
+    setUploadVisualState('error');
     showError('Upload error: ' + e.message);
   } finally {
     btn.disabled = pendingFiles.length === 0;
-    btn.textContent = pendingFiles.length ? ('Upload ' + pendingFiles.length + ' file(s)') : 'Load files into analytics';
+    btn.textContent = pendingFiles.length ? ('Load ' + pendingFiles.length + ' files into analytics') : 'Load files into analytics';
   }
 }
 
@@ -430,6 +532,7 @@ async function refreshTableLibrary() {
     const data = await res.json();
     loadedTables = data.tables || {};
     renderTableLibrary();
+    updateLoadedTablesBadge();
     syncQAAvailability();
     refreshTableContextBar();
     // Broadcast to dashboard page
@@ -444,6 +547,7 @@ function renderTableLibrary() {
   const names = Object.keys(loadedTables);
   if (!names.length) { sec.style.display = 'none'; return; }
   sec.style.display = '';
+  setTableLibraryView(tableLibraryView);
 
   const sourceIcon = s => s === 'databricks' ? '🔷' : s === 's3' ? '🟠' : '📄';
   list.innerHTML = names.map(name => {
@@ -866,7 +970,18 @@ function appendThinking() {
   const id   = 'think_' + Date.now();
   const div  = document.createElement('div');
   div.id = id; div.className = 'msg bot';
-  div.innerHTML = `<div class="msg-bubble thinking"><span class="think-dot"></span><span class="think-dot"></span><span class="think-dot"></span><span class="think-label" id="${id}_lbl">Thinking…</span></div>`;
+  div.innerHTML = `<div class="msg-bubble thinking">
+    <div class="thinking-status">
+      <span>Reading table schema</span>
+      <span>&#8594;</span>
+      <span>Checking cache</span>
+      <span>&#8594;</span>
+      <span>Generating SQL</span>
+      <span>&#8594;</span>
+      <span>Running query</span>
+    </div>
+    <span class="think-label" id="${id}_lbl">Thinking...</span>
+  </div>`;
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
   return id;
@@ -1352,22 +1467,27 @@ function renderPendingECharts() {
 async function initDatabricksBrowser() {
   const dot  = document.getElementById('dbStatusDot');
   const text = document.getElementById('dbStatusText');
+  const srcState = document.getElementById('dbSourceState');
   if (!dot||!text) return;
   text.textContent = 'Connecting…';
+  if (srcState) srcState.innerHTML = '&#9679; Connecting';
   try {
     const r    = await fetch(`${API}/api/databricks/status`);
     const data = await r.json();
     if (data.connected) {
       dot.className  = 'db-dot db-dot-ok';
       text.textContent = 'Connected to ' + data.hostname;
+      if (srcState) srcState.innerHTML = '&#9650; Connected';
       loadDbCatalogs();
     } else {
       dot.className = 'db-dot db-dot-err';
       text.textContent = 'Error: ' + (data.error||'Not connected');
+      if (srcState) srcState.innerHTML = '&#9679; Not connected';
     }
   } catch (e) {
     dot.className = 'db-dot db-dot-err';
     text.textContent = 'Could not reach Databricks API';
+    if (srcState) srcState.innerHTML = '&#9679; Not connected';
   }
 }
 
@@ -1628,6 +1748,33 @@ function updateVoiceSpeed(v)  {
   }
   await refreshTableLibrary();
   switchTab(getInitialTabFromUrl());
+  setTableLibraryView(tableLibraryView);
+
+  const railBtn = document.getElementById('railCollapseBtn');
+  railBtn?.addEventListener('click', () => {
+    document.getElementById('leftRail')?.classList.toggle('collapsed');
+    railBtn.innerHTML = document.getElementById('leftRail')?.classList.contains('collapsed') ? '&#10095;' : '&#10094;';
+  });
+
+  const themeBtn = document.getElementById('themeToggleBtn');
+  themeBtn?.addEventListener('click', () => {
+    const nextDark = !document.body.classList.contains('theme-dark');
+    document.body.classList.toggle('theme-dark', nextDark);
+    localStorage.setItem('convbi_theme', nextDark ? 'dark' : 'light');
+    themeBtn.innerHTML = nextDark ? '&#9790;' : '&#9788;';
+  });
+  const storedTheme = localStorage.getItem('convbi_theme');
+  if (storedTheme === 'dark') {
+    document.body.classList.add('theme-dark');
+    if (themeBtn) themeBtn.innerHTML = '&#9790;';
+  }
+
+  const qaInput = document.getElementById('qaInput');
+  qaInput?.addEventListener('input', () => {
+    qaInput.style.height = 'auto';
+    qaInput.style.height = Math.min(qaInput.scrollHeight, 132) + 'px';
+  });
+
   // Load query history
   try { queryHistory = JSON.parse(localStorage.getItem('convbi_history')||'[]'); } catch (_) {}
   // Set up voice manager if available

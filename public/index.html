@@ -3,54 +3,81 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Conv BI v2</title>
+  <title>ConI - Data Input, Dashboard, Ask Questions</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles/main.css">
 </head>
 <body>
-<div class="app">
-  <!-- ── Header ── -->
-  <div class="header">
-    <div class="header-inner">
-      <div>
-        <h1>Conv BI <span class="header-v2">v2</span></h1>
-        <p>Upload any data, connect any source, ask questions in plain language</p>
+<div class="app-shell">
+  <aside class="left-rail" id="leftRail" aria-label="Primary navigation">
+    <div class="rail-brand">
+      <div class="rail-logo">CI</div>
+      <div class="rail-name-wrap">
+        <div class="rail-name">ConI</div>
+        <div class="rail-sub">Conversational BI</div>
       </div>
-      <div class="header-actions">
-        <a href="/dashboard" class="header-dash-btn">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.4"/><rect x="9" y="1" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.4"/><rect x="1" y="9" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.4"/><rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.4"/></svg>
-          Dashboard
-        </a>
-      </div>
+      <button class="rail-collapse" id="railCollapseBtn" title="Collapse navigation" aria-label="Collapse navigation">&#10094;</button>
     </div>
-  </div>
 
-  <!-- ── Tabs ── -->
-  <div class="tabs">
-    <button class="tab active" onclick="switchTab('input')">Data Input</button>
-    <a class="tab" href="/dashboard" style="text-decoration:none">Dashboard</a>
-    <button class="tab" onclick="switchTab('qa')">Ask Questions</button>
-  </div>
+    <nav class="rail-nav">
+      <button class="rail-link tab active" data-nav-tab="input" onclick="switchTab('input')">
+        <span class="rail-ico">&#x21E7;</span>
+        <span class="rail-label">Data Input</span>
+      </button>
+      <a class="rail-link tab nav-lock" id="dashboardNav" data-nav-tab="dashboard" href="/dashboard" data-locked-title="Load a table to begin" onclick="return handleLockedNav(event, this)">
+        <span class="rail-ico">&#x25A6;</span>
+        <span class="rail-label">Dashboard</span>
+      </a>
+      <button class="rail-link tab nav-lock" id="askNav" data-nav-tab="qa" data-locked-title="Load a table to begin" onclick="switchTab('qa')">
+        <span class="rail-ico">&#x270E;</span>
+        <span class="rail-label">Ask Questions</span>
+      </button>
+    </nav>
+
+    <div class="rail-tables-badge" id="tablesLoadedBadge" aria-live="polite">Tables loaded: 0</div>
+  </aside>
+
+  <main class="main-shell">
+    <header class="top-bar">
+      <div>
+        <div class="top-title">ConI Workspace</div>
+        <div class="top-context" id="activeTablesContext">Active tables: none</div>
+      </div>
+      <div class="top-actions">
+        <input class="top-search" type="search" placeholder="Search table, metric, or question" aria-label="Global search">
+        <button class="top-icon-btn" id="themeToggleBtn" title="Toggle light or dark mode" aria-label="Toggle light or dark mode">&#9788;</button>
+        <button class="top-user-btn" title="Account" aria-label="Account menu">Analyst</button>
+      </div>
+    </header>
+
+    <div class="page-content">
 
   <!-- ══════════════════════════════════════════════════
        DATA INPUT TAB
   ═══════════════════════════════════════════════════ -->
   <div id="input" class="section active">
 
-    <!-- Source selector -->
-    <div class="src-tab-bar">
-      <button class="src-tab active" data-tab="files" onclick="switchSourceTab('files')">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="10" height="14" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M5 5h6M5 8h6M5 11h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-        Upload Files
+    <div class="section-head">
+      <h2>Data Input</h2>
+      <p>Get data in fast with forgiving, transparent import controls.</p>
+    </div>
+
+    <div class="source-card-grid">
+      <button class="source-card src-tab active" data-tab="files" onclick="switchSourceTab('files')">
+        <div class="source-card-title">Upload Files</div>
+        <div class="source-card-sub">Drag-drop or browse CSV, TSV, XLSX, JSON, Parquet</div>
+        <span class="status-pill status-ok">&#9650; Ready</span>
       </button>
-      <button class="src-tab" data-tab="databricks" onclick="switchSourceTab('databricks')">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2l6 3.5v5L8 14 2 10.5v-5L8 2z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M2 5.5l6 3.5 6-3.5M8 9v5" stroke="currentColor" stroke-width="1.3"/></svg>
-        Databricks
+      <button class="source-card src-tab" data-tab="databricks" onclick="switchSourceTab('databricks')">
+        <div class="source-card-title">Databricks</div>
+        <div class="source-card-sub">Catalog to table browser with preview before load</div>
+        <span class="status-pill status-warn" id="dbSourceState">&#9679; Not connected</span>
       </button>
-      <button class="src-tab" data-tab="s3" onclick="switchSourceTab('s3')">
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 1L15 5v6L8 15 1 11V5L8 1z" stroke="currentColor" stroke-width="1.3"/><path d="M8 9a2 2 0 100-4 2 2 0 000 4z" stroke="currentColor" stroke-width="1.3"/></svg>
-        AWS S3
+      <button class="source-card src-tab" data-tab="s3" onclick="switchSourceTab('s3')">
+        <div class="source-card-title">AWS S3</div>
+        <div class="source-card-sub">Use server creds or enter manually and test</div>
+        <span class="status-pill status-info">&#9679; Ready to connect</span>
       </button>
     </div>
 
@@ -69,9 +96,21 @@
         </svg>
         <div class="drop-title">Drop CSV, Excel, Parquet, or JSON files</div>
         <div class="drop-sub">Multiple files supported — each sheet in an Excel file becomes a separate table</div>
+        <div class="format-chip-row" aria-label="Supported file formats">
+          <span class="format-chip">CSV</span>
+          <span class="format-chip">TSV</span>
+          <span class="format-chip">XLSX</span>
+          <span class="format-chip">JSON</span>
+          <span class="format-chip">Parquet</span>
+        </div>
         <div class="drop-btn">Choose Files</div>
       </div>
       <input type="file" id="fileInput" accept=".csv,.xlsx,.xls,.xlsm,.parquet,.json,.tsv" multiple style="display:none" onchange="handleFileInputChange(this.files)"/>
+
+      <div id="uploadQueue" class="card upload-queue" style="display:none">
+        <div class="queue-head">Upload Queue</div>
+        <div id="uploadQueueList"></div>
+      </div>
 
       <div id="previewSection" style="display:none">
         <div class="card">
@@ -79,7 +118,9 @@
           <div class="preview-table-wrap"><table id="previewTable"></table></div>
           <div id="rowCount" class="row-count"></div>
         </div>
-        <button class="submit-btn" id="loadBtn" onclick="uploadStagedFiles()">Load files into analytics</button>
+        <div class="sticky-action-row">
+          <button class="submit-btn" id="loadBtn" onclick="uploadStagedFiles()">Load files into analytics</button>
+        </div>
       </div>
     </div>
 
@@ -134,10 +175,16 @@
     <!-- Loaded table library -->
     <div id="tableLibrarySection" style="display:none">
       <div class="card" style="margin-top:1.25rem">
-        <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--t2);margin-bottom:12px">
-          Loaded Tables
+        <div class="table-library-head">
+          <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--t2)">
+            Table Library
+          </div>
+          <div class="table-view-toggle">
+            <button id="tableViewGridBtn" class="mini-btn active" onclick="setTableLibraryView('grid')">Grid</button>
+            <button id="tableViewListBtn" class="mini-btn" onclick="setTableLibraryView('list')">List</button>
+          </div>
         </div>
-        <div id="tableLibraryList"></div>
+        <div id="tableLibraryList" class="table-library-grid"></div>
       </div>
     </div>
   </div>
@@ -154,9 +201,14 @@
   ═══════════════════════════════════════════════════ -->
   <div id="qa" class="section qa-wrap">
 
+    <div class="section-head">
+      <h2>Ask Questions</h2>
+      <p>Ask in plain English and review the SQL and confidence path.</p>
+    </div>
+
     <!-- Table context selector -->
     <div id="tableContextBar" class="table-context-bar" style="display:none">
-      <span class="ctx-label">Asking about:</span>
+      <span class="ctx-label">Asking across:</span>
       <div id="tableContextChips" class="ctx-chips"></div>
       <button class="ctx-all-btn" onclick="selectAllTables()">All Tables</button>
     </div>
@@ -175,20 +227,32 @@
       </div>
     </div>
 
+    <div id="workflowRuntime" class="workflow-runtime" aria-live="polite"></div>
+
     <div id="messages" class="messages"></div>
-  <div id="followupRail" class="card" style="display:none"></div>
+    <div id="followupRail" class="card" style="display:none"></div>
 
     <!-- Composer -->
     <div class="composer-bar">
       <div class="composer-inner">
+        <button class="mic-btn" id="voiceSettingsBtn" onclick="openVoiceSettings()" title="Voice settings" aria-label="Voice settings">&#9881;</button>
         <button class="mic-btn" id="micBtn" onclick="toggleMic()" title="Ask by voice">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="5" y="1" width="6" height="9" rx="3" stroke="currentColor" stroke-width="1.4"/><path d="M2 8a6 6 0 0012 0M8 14v1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
         </button>
-        <input id="qaInput" type="text" placeholder="Ask any question about your data…" onkeydown="if(event.key==='Enter') askQuestion()"/>
-        <button class="qa-ask-btn" id="askBtn" onclick="askQuestion()">Ask</button>
+        <textarea id="qaInput" rows="1" placeholder="Ask any question about your data..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();askQuestion();}"></textarea>
+        <button class="qa-ask-btn" id="askBtn" onclick="askQuestion()">Send</button>
       </div>
+      <div class="composer-caption">Answers may be inaccurate — check the SQL.</div>
     </div>
   </div>
+
+  <button class="ask-fab" id="askFab" onclick="switchTab('qa')" title="Ask questions from anywhere" aria-label="Ask questions from anywhere">
+    <span>&#128172;</span>
+    <span>Ask</span>
+  </button>
+
+  </div>
+  </main>
 </div>
 
 <!-- ── Voice settings modal ── -->
