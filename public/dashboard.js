@@ -495,7 +495,7 @@ function _normalizeOption(option, renderOpts = {}) {
     // Swap old-palette linear gradient (bar charts)
     if (s.itemStyle?.color?.colorStops) {
       s.itemStyle.color = { type:'linear', x:0,y:0,x2:0,y2:1,
-        colorStops:[{offset:0,color:'#9d71d9'},{offset:1,color:'#6F42C1'}] };
+        colorStops:[{offset:0,color:'#A95ABA'},{offset:1,color:'#7A2F8F'}] };
     }
     // Swap old-palette line colors
     if (s.lineStyle?.color && OLD_DARK.includes(s.lineStyle.color)) {
@@ -1095,7 +1095,7 @@ function _buildScatterFromPoints(points = [], xName = 'X', yName = 'Y') {
     series: [{
       type:'scatter',
       data: points,
-      itemStyle:{ color:'#007BFF', opacity:0.6 },
+      itemStyle:{ color:'#3B82F6', opacity:0.6 },
       symbolSize: 6
     }]
   };
@@ -1897,14 +1897,14 @@ function renderRelationshipMap(names, relData) {
     };
   });
 
-  const sourceColor = s => ({ databricks: '#00CCCC', s3: '#D97706', file: '#6F42C1' })[s] || '#6F42C1';
+  const sourceColor = s => ({ databricks: '#3B82F6', s3: '#F59E0B', file: '#7A2F8F' })[s] || '#7A2F8F';
 
   // Draw edges first
   let edges = '';
   (relData.joins||[]).forEach(j => {
     const pa = positions[j.tableA], pb = positions[j.tableB];
     if (!pa||!pb) return;
-    const color = j.confidence > 0.8 ? '#00CCCC' : j.confidence > 0.5 ? '#D97706' : '#9CA3AF';
+    const color = j.confidence > 0.8 ? '#3B82F6' : j.confidence > 0.5 ? '#F59E0B' : '#9CA3AF';
     const dash  = j.confidence > 0.8 ? '' : 'stroke-dasharray="5,4"';
     edges += `<line x1="${pa.x}" y1="${pa.y}" x2="${pb.x}" y2="${pb.y}" stroke="${color}" stroke-width="1.5" opacity="0.6" ${dash}/>`;
     const mx = (pa.x+pb.x)/2, my = (pa.y+pb.y)/2;
@@ -2247,7 +2247,7 @@ function renderAutoCharts(samples, containerId, maxCharts) {
 }
 
 // ── ECharts option builders (light theme — Fuchsian/Aquamarine palette) ───────
-const DARK_COLORS = ['#6F42C1','#007BFF','#00CCCC','#0DCAF0','#17A2B8','#6c757d'];
+const DARK_COLORS = ['#7A2F8F','#3B82F6','#22C55E','#F59E0B','#D946EF','#06B6D4'];
 
 const DARK_GRID  = { top:16, right:16, bottom:48, left:16, containLabel:true };
 const DARK_AXIS  = { axisLine:{lineStyle:{color:'#E5E7EB'}}, splitLine:{lineStyle:{color:'#F3F4F6'}}, axisLabel:{color:'#6B7280',fontSize:11} };
@@ -2278,7 +2278,7 @@ function buildBarOption(xData, yData) {
       type:'bar', data:yData,
       itemStyle:{borderRadius:[4,4,0,0], color: {
         type:'linear', x:0,y:0,x2:0,y2:1,
-        colorStops:[{offset:0,color:'#9d71d9'},{offset:1,color:'#6F42C1'}]
+        colorStops:[{offset:0,color:'#A95ABA'},{offset:1,color:'#7A2F8F'}]
       }},
       label:{
         show: xData.length<=10,
@@ -2302,7 +2302,7 @@ function buildHorizontalBarOption(labels, values) {
       data: values,
       itemStyle:{borderRadius:[0,4,4,0], color: {
         type:'linear', x:0,y:0,x2:1,y2:0,
-        colorStops:[{offset:0,color:'#9d71d9'},{offset:1,color:'#6F42C1'}]
+        colorStops:[{offset:0,color:'#A95ABA'},{offset:1,color:'#7A2F8F'}]
       }},
       label:{
         show: labels.length<=10,
@@ -2331,8 +2331,8 @@ function buildAreaOption(labels, values, seriesName = 'Value') {
         color: {
           type:'linear', x:0, y:0, x2:0, y2:1,
           colorStops:[
-            { offset:0, color:'rgba(111,66,193,0.35)' },
-            { offset:1, color:'rgba(111,66,193,0.04)' }
+            { offset:0, color:'rgba(122,47,143,0.35)' },
+            { offset:1, color:'rgba(122,47,143,0.04)' }
           ]
         }
       },
@@ -2379,7 +2379,7 @@ function buildScatterOption(rows, xCol, yCol) {
     series: [{
       type:'scatter',
       data: rows.map(r => [+r[xCol]||0, +r[yCol]||0]),
-      itemStyle:{ color:'#007BFF', opacity:0.6 },
+      itemStyle:{ color:'#3B82F6', opacity:0.6 },
       symbolSize: 6
     }]
   };
@@ -2468,7 +2468,22 @@ async function loadTableExplorer(tableName) {
           // Only apply heatmap highlight for numeric (non-date) columns
           if (s && !isNaN(+v) && !isDate(c)) {
             const pct = s.max === s.min ? 0.5 : (+v - s.min) / (s.max - s.min);
-            style = `background:rgba(111,66,193,${(pct*0.18).toFixed(2)})`;
+            const lo = [248, 250, 252];
+            const mid = [238, 221, 244];
+            const hi = [122, 47, 143];
+            let r; let g; let b;
+            if (pct <= 0.5) {
+              const t = pct / 0.5;
+              r = Math.round(lo[0] + (mid[0] - lo[0]) * t);
+              g = Math.round(lo[1] + (mid[1] - lo[1]) * t);
+              b = Math.round(lo[2] + (mid[2] - lo[2]) * t);
+            } else {
+              const t = (pct - 0.5) / 0.5;
+              r = Math.round(mid[0] + (hi[0] - mid[0]) * t);
+              g = Math.round(mid[1] + (hi[1] - mid[1]) * t);
+              b = Math.round(mid[2] + (hi[2] - mid[2]) * t);
+            }
+            style = `background:rgb(${r},${g},${b});color:${pct > 0.72 ? '#FFFFFF' : 'inherit'}`;
           }
           const displayVal = formatTableCell(v, c.name);
           return `<td style="${style}" title="${escapeHtml(displayVal)}">${escapeHtml(displayVal)}</td>`;

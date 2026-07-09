@@ -553,7 +553,7 @@ function renderTableLibrary() {
   list.innerHTML = names.map(name => {
     const t = loadedTables[name];
     return `<div class="ds-item">
-      <span class="ds-dot" style="background:#4F46E5"></span>
+      <span class="ds-dot" style="background:#7A2F8F"></span>
       <span class="ds-name">${escapeHtml(name)}</span>
       <span class="ds-badge">${sourceIcon(t.source||'file')} ${escapeHtml(t.source||'file')}</span>
       <span class="ds-rows">${(t.rowCount||0).toLocaleString()} rows</span>
@@ -670,7 +670,7 @@ async function renderInlineDashboard() {
           grid:{top:20,right:10,bottom:30,left:50},
           xAxis:{type:'category',data:keys,axisLabel:{fontSize:10}},
           yAxis:{type:'value',axisLabel:{fontSize:10}},
-          series:[{type:'line',data:keys.map(k=>+(byDate[k].reduce((a,b)=>a+b,0)/byDate[k].length).toFixed(2)),smooth:true,lineStyle:{width:2},itemStyle:{color:'#4F46E5'},areaStyle:{opacity:0.08}}],
+          series:[{type:'line',data:keys.map(k=>+(byDate[k].reduce((a,b)=>a+b,0)/byDate[k].length).toFixed(2)),smooth:true,lineStyle:{width:2},itemStyle:{color:'#7A2F8F'},areaStyle:{opacity:0.08}}],
           tooltip:{trigger:'axis'}
         };
       } else if (catCols.length && numCols.length) {
@@ -683,7 +683,7 @@ async function renderInlineDashboard() {
           grid:{top:20,right:10,bottom:40,left:50},
           xAxis:{type:'category',data:keys,axisLabel:{fontSize:10,rotate:keys.length>6?30:0}},
           yAxis:{type:'value',axisLabel:{fontSize:10}},
-          series:[{type:'bar',data:keys.map(k=>+(groups[k].reduce((a,b)=>a+b,0)/groups[k].length).toFixed(2)),itemStyle:{color:'#0EA5E9',borderRadius:[4,4,0,0]}}],
+          series:[{type:'bar',data:keys.map(k=>+(groups[k].reduce((a,b)=>a+b,0)/groups[k].length).toFixed(2)),itemStyle:{color:'#3B82F6',borderRadius:[4,4,0,0]}}],
           tooltip:{trigger:'axis'}
         };
       }
@@ -1415,7 +1415,7 @@ function buildEChartsHtml(columns, rows, question) {
         name: c.name, type:'line',
         data: rows.map(r=>r[c.name]),
         smooth: true, lineStyle:{width:2},
-        itemStyle:{color:['#4F46E5','#0EA5E9','#059669','#D97706'][i]}
+        itemStyle:{color:['#7A2F8F','#3B82F6','#22C55E','#F59E0B'][i]}
       })),
       tooltip:{trigger:'axis'}
     };
@@ -1427,7 +1427,7 @@ function buildEChartsHtml(columns, rows, question) {
       xAxis: {type:'category',data:limited.map(r=>String(r[xCol])),axisLabel:{fontSize:11,rotate:limited.length>8?30:0}},
       yAxis: {type:'value',axisLabel:{fontSize:11}},
       series: [{type:'bar',data:limited.map(r=>r[yCol]),
-        itemStyle:{color:'#4F46E5',borderRadius:[4,4,0,0]},
+        itemStyle:{color:'#7A2F8F',borderRadius:[4,4,0,0]},
         label:{show:limited.length<=12,position:'top',fontSize:10}}],
       tooltip:{trigger:'axis'}
     };
@@ -1437,7 +1437,7 @@ function buildEChartsHtml(columns, rows, question) {
       xAxis: {type:'value',name:numCols[0].name,nameLocation:'middle',nameGap:25,axisLabel:{fontSize:11}},
       yAxis: {type:'value',name:numCols[1].name,nameLocation:'middle',nameGap:40,axisLabel:{fontSize:11}},
       series: [{type:'scatter',data:rows.map(r=>[r[numCols[0].name],r[numCols[1].name]]),
-        itemStyle:{color:'#4F46E5',opacity:0.7}}],
+        itemStyle:{color:'#7A2F8F',opacity:0.7}}],
       tooltip:{trigger:'item'}
     };
   }
@@ -1668,12 +1668,12 @@ async function browseS3() {
     // Render file list — use data-s3key to avoid quote escaping issues in onclick
     const rows = files.map(f => `
       <div class="s3-file-row" style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">
-        <span class="s3-ext-badge" style="font-size:10px;font-weight:700;background:var(--accent);color:#fff;padding:2px 6px;border-radius:4px;min-width:38px;text-align:center;text-transform:uppercase">${escapeHtml(f.ext)}</span>
+        <span class="s3-ext-badge" style="font-size:10px;font-weight:700;background:var(--brand-primary);color:#fff;padding:2px 6px;border-radius:4px;min-width:38px;text-align:center;text-transform:uppercase">${escapeHtml(f.ext)}</span>
         <div style="flex:1;min-width:0">
           <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(f.key)}">${escapeHtml(f.name)}</div>
           <div style="font-size:11px;color:var(--t2)">${escapeHtml(f.sizeLabel)} &bull; ${escapeHtml(f.key)}</div>
         </div>
-        <button data-s3key="${escapeHtml(f.key)}" onclick="loadS3FileFromBtn(this)" style="font-size:12px;padding:4px 12px;background:var(--accent);color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap">Load</button>
+        <button data-s3key="${escapeHtml(f.key)}" onclick="loadS3FileFromBtn(this)" style="font-size:12px;padding:4px 12px;background:var(--brand-primary);color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap">Load</button>
       </div>`).join('');
 
     if (listEl) listEl.innerHTML = `
