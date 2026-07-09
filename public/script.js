@@ -10,6 +10,8 @@ let savedInsights  = JSON.parse(localStorage.getItem('convbi_insights') || '[]')
 let conversationTurns = []; // recent Q/A context for intent decoding
 const answerPayloadStore = {}; // cardId -> payload for exports
 let isLoadingDynamicChips = false;
+let currentFollowupPrompts = [];
+const askedFollowupPromptSet = new Set();
 
 const WORKFLOW_LABELS = {
   6: 'User Asks Business Question',
@@ -234,7 +236,8 @@ async function fetchFollowupSuggestions(question, decoded, sections, rowsPreview
         question,
         sections,
         decodedIntent: decoded || null,
-        rowsPreview: (rowsPreview || []).slice(0, 20)
+        rowsPreview: (rowsPreview || []).slice(0, 20),
+        conversationContext: conversationTurns.slice(-6)
       })
     });
     const data = await res.json();
@@ -249,14 +252,55 @@ async function fetchFollowupSuggestions(question, decoded, sections, rowsPreview
   }
 }
 
+function normalizePromptText(text) {
+  return String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function markFollowupAsAsked(prompt) {
+  const n = normalizePromptText(prompt);
+  if (n) askedFollowupPromptSet.add(n);
+}
+
+function renderFollowupButtons(rail, prompts) {
+  rail.innerHTML = `
+    <div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--t3);margin-bottom:8px">Suggested Follow-up Questions</div>
+    <div style="display:flex;gap:7px;flex-wrap:wrap">${prompts.map(p => `<button class="chip" data-followup-text="${escapeHtml(p)}">${escapeHtml(p)}</button>`).join('')}</div>`;
+
+  rail.querySelectorAll('button[data-followup-text]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const text = btn.getAttribute('data-followup-text') || '';
+      runFollowupPrompt(text);
+    });
+  });
+}
+
+function refreshFollowupRailCurrentList() {
+  const rail = document.getElementById('followupRail');
+  if (!rail) return;
+  const visible = currentFollowupPrompts.filter(p => !askedFollowupPromptSet.has(normalizePromptText(p)));
+  if (!visible.length) {
+    rail.innerHTML = `
+      <div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--t3);margin-bottom:8px">Suggested Follow-up Questions</div>
+      <div style="font-size:12px;color:var(--t2)">Generating next follow-up suggestions...</div>`;
+    return;
+  }
+  renderFollowupButtons(rail, visible);
+}
+
 async function renderFollowupRail(question, decoded, sections, rowsPreview) {
   const rail = document.getElementById('followupRail');
   if (!rail) return;
   const prompts = await fetchFollowupSuggestions(question, decoded, sections, rowsPreview);
+  const filtered = prompts.filter(p => !askedFollowupPromptSet.has(normalizePromptText(p)));
+  currentFollowupPrompts = filtered;
   rail.style.display = '';
-  rail.innerHTML = `
-    <div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--t3);margin-bottom:8px">Suggested Follow-up Questions</div>
-    <div style="display:flex;gap:7px;flex-wrap:wrap">${prompts.map(p => `<button class="chip" onclick="runFollowupPrompt('${escapeHtml(p)}')">${escapeHtml(p)}</button>`).join('')}</div>`;
+  if (!currentFollowupPrompts.length) {
+    rail.innerHTML = `
+      <div style="font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--t3);margin-bottom:8px">Suggested Follow-up Questions</div>
+      <div style="font-size:12px;color:var(--t2)">No more follow-up suggestions for this thread. Ask another business question.</div>`;
+    return;
+  }
+  renderFollowupButtons(rail, currentFollowupPrompts);
 }
 
 function runFollowupPrompt(prompt) {
@@ -265,6 +309,9 @@ function runFollowupPrompt(prompt) {
     window.open('/dashboard', '_blank');
     return;
   }
+  markFollowupAsAsked(prompt);
+  currentFollowupPrompts = currentFollowupPrompts.filter(p => normalizePromptText(p) !== normalizePromptText(prompt));
+  refreshFollowupRailCurrentList();
   const input = document.getElementById('qaInput');
   if (!input) return;
   input.value = prompt;
@@ -597,6 +644,10 @@ async function askQuestion() {
   const q     = (input.value || '').trim();
   if (!q) return;
 
+  markFollowupAsAsked(q);
+  currentFollowupPrompts = currentFollowupPrompts.filter(p => normalizePromptText(p) !== normalizePromptText(q));
+  refreshFollowupRailCurrentList();
+
   const tables = Object.keys(loadedTables);
   if (!tables.length) { showError('Load some data first.'); return; }
 
@@ -729,6 +780,11 @@ async function askQuestion() {
         ].join('\n');
       }
       const sections = parseInterpretSections(answerText);
+      if (isGenericDirectAnswer(sections.directAnswer || sections.summary || '')) {
+        const betterDirectAnswer = synthesizeDirectAnswerFromResult(q, execData);
+        sections.directAnswer = betterDirectAnswer;
+        sections.summary = betterDirectAnswer;
+      }
       renderAnswerCard(q, sections, sql, decoded, execData, allTableSchemas);
       setWorkflowRuntime(10, 'Follow-up prompts are ready for deeper exploration.');
       await renderFollowupRail(q, decoded || {}, sections, allRows);
@@ -867,11 +923,132 @@ function parseInterpretSections(text) {
   };
 }
 
+function toTitleLabel(name) {
+  return String(name || '').replace(/[_-]+/g, ' ').trim();
+}
+
+function isNumericLike(value) {
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value !== 'string') return false;
+  const n = Number(value);
+  return Number.isFinite(n);
+}
+
+function formatMetricValue(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value ?? '');
+  if (Math.abs(n) >= 1000000) return (n / 1000000).toFixed(2).replace(/\.00$/, '') + 'M';
+  if (Math.abs(n) >= 1000) return (n / 1000).toFixed(2).replace(/\.00$/, '') + 'K';
+  return n.toFixed(2).replace(/\.00$/, '');
+}
+
+function synthesizeDirectAnswerFromResult(question, execData) {
+  const rows = Array.isArray(execData?.rows) ? execData.rows : [];
+  const columns = Array.isArray(execData?.columns) ? execData.columns : [];
+  const q = String(question || '').toLowerCase();
+
+  if (!rows.length) return 'No records matched the current question filters.';
+
+  const sample = rows.slice(0, 25);
+  const numericCols = columns
+    .map(c => c.name)
+    .filter(name => sample.some(r => isNumericLike(r?.[name])));
+  const categoricalCols = columns
+    .map(c => c.name)
+    .filter(name => !numericCols.includes(name));
+
+  const likelyCountCol = columns.map(c => c.name).find(n => /count|row_count|total_rows|records/i.test(String(n || '')));
+  if (likelyCountCol && rows[0] && isNumericLike(rows[0][likelyCountCol])) {
+    return `There are ${formatMetricValue(rows[0][likelyCountCol])} records for this question.`;
+  }
+
+  if (rows.length === 1) {
+    const row = rows[0];
+    if (numericCols.length === 1) {
+      const m = numericCols[0];
+      return `${toTitleLabel(m)} is ${formatMetricValue(row[m])}.`;
+    }
+    if (numericCols.length > 1) {
+      const pairs = numericCols.slice(0, 3).map(m => `${toTitleLabel(m)} ${formatMetricValue(row[m])}`);
+      return `Key results: ${pairs.join(', ')}.`;
+    }
+    const keys = Object.keys(row || {}).slice(0, 3);
+    if (keys.length) {
+      return `Top result: ${keys.map(k => `${toTitleLabel(k)} ${String(row[k] ?? '')}`).join(', ')}.`;
+    }
+  }
+
+  const metric = numericCols[0] || null;
+  const dimension = categoricalCols.find(c => !/date|time|month|year|quarter|week/i.test(String(c || ''))) || categoricalCols[0] || null;
+
+  if (metric && dimension) {
+    const ranked = [...rows].filter(r => isNumericLike(r?.[metric]));
+    if (ranked.length) {
+      const wantMin = /lowest|min|least|bottom|worst/.test(q);
+      ranked.sort((a, b) => Number(a[metric]) - Number(b[metric]));
+      const pick = wantMin ? ranked[0] : ranked[ranked.length - 1];
+      const who = String(pick?.[dimension] ?? 'N/A');
+      return `${toTitleLabel(dimension)} ${who} has ${wantMin ? 'the lowest' : 'the highest'} ${toTitleLabel(metric)} at ${formatMetricValue(pick?.[metric])}.`;
+    }
+  }
+
+  if (metric) {
+    const vals = rows.map(r => Number(r?.[metric])).filter(v => Number.isFinite(v));
+    if (vals.length) {
+      const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+      return `${toTitleLabel(metric)} averages ${formatMetricValue(avg)} across ${vals.length} returned rows.`;
+    }
+  }
+
+  return `Returned ${rows.length} rows; refine the question to focus on a KPI or comparison.`;
+}
+
+function isGenericDirectAnswer(text) {
+  const t = String(text || '').trim().toLowerCase();
+  if (!t) return true;
+  return (
+    /^the query completed successfully and returned\s+\d+\s+rows?\.?$/i.test(t) ||
+    /^query returned\s+\d+\s+rows?\.?$/i.test(t) ||
+    /^not available\.?$/i.test(t)
+  );
+}
+
 // ── Render answer card ────────────────────────────────────────────────────────
+function getSectionVisibility(question, decoded) {
+  const q = String(question || '').toLowerCase();
+  const intent = String(decoded?.intent_type || '').toLowerCase();
+
+  const asksWhy = /\b(why|reason|cause|root cause|driver|driving|explain)\b/.test(q);
+  const asksAction = /\b(recommend|recommendation|action|next step|what should|how can we|improve|mitigate)\b/.test(q);
+  const asksImpact = /\b(impact|risk|opportunity|implication|effect|business impact|so what)\b/.test(q);
+  const asksTrend = /\b(trend|over time|month|quarter|year|forecast|predict|growth|decline|increase|decrease)\b/.test(q);
+  const asksComparison = /\b(compare|comparison|vs\.?|versus|difference|higher|lower|rank|top|bottom)\b/.test(q);
+  const asksEvidence = /\b(evidence|proof|support|supporting|confidence|how do you know)\b/.test(q);
+
+  const isLookup = intent === 'lookup';
+  const isTrendLike = ['trend', 'comparison', 'ranking', 'aggregation', 'ratio', 'visualization'].includes(intent);
+  const isRootCauseLike = intent === 'conditional' || asksWhy;
+
+  return {
+    whatHappened: !isLookup && (isTrendLike || asksTrend || asksComparison),
+    whyHappened: isRootCauseLike,
+    supportingEvidence: !isLookup && (isTrendLike || isRootCauseLike || asksEvidence || asksComparison),
+    businessImpact: asksImpact || isRootCauseLike || intent === 'trend' || intent === 'comparison',
+    recommendedAction: asksAction || isRootCauseLike
+  };
+}
+
 function renderAnswerCard(question, sections, sql, decoded, execData, schemas, fromCache = false) {
   const msgs = document.getElementById('messages');
   const div  = document.createElement('div');
   div.className = 'msg bot answer-card-msg';
+
+  const currentDirectAnswer = sections?.directAnswer || sections?.summary || '';
+  if (isGenericDirectAnswer(currentDirectAnswer)) {
+    const betterDirectAnswer = synthesizeDirectAnswerFromResult(question, execData);
+    sections.directAnswer = betterDirectAnswer;
+    sections.summary = betterDirectAnswer;
+  }
 
   const tablesUsed = decoded?.tables_needed || Object.keys(schemas||{}).slice(0,3);
   const joinInfo   = decoded?.join_hint ? `<div class="answer-join">JOIN: ${escapeHtml(decoded.join_hint)}</div>` : '';
@@ -905,21 +1082,31 @@ function renderAnswerCard(question, sections, sql, decoded, execData, schemas, f
     hasUsefulText(sections.recommendedAction)
   );
 
-  const explanationHtml = hasExplanation
+  const sectionVisibility = getSectionVisibility(question, decoded);
+
+  const showWhat = sectionVisibility.whatHappened && hasUsefulText(sections.whatHappened);
+  const showWhy = sectionVisibility.whyHappened && hasUsefulText(sections.whyHappened);
+  const showEvidence = sectionVisibility.supportingEvidence && hasUsefulText(sections.supportingEvidence);
+  const showImpact = sectionVisibility.businessImpact && hasUsefulText(sections.businessImpact);
+  const showAction = sectionVisibility.recommendedAction && hasUsefulText(sections.recommendedAction);
+
+  const hasRelevantExplanation = !!(showWhat || showWhy || showEvidence || showImpact || showAction);
+
+  const explanationHtml = hasExplanation && hasRelevantExplanation
     ? `
       <details class="answer-approach-detail" style="margin-top:10px">
         <summary class="approach-toggle">Explain this answer</summary>
         <div class="approach-body" style="margin-top:10px">
-          ${hasUsefulText(sections.whatHappened) ? `<div class="answer-insight"><strong>What happened:</strong> ${escapeHtml(sections.whatHappened)}</div>` : ''}
-          ${hasUsefulText(sections.whyHappened) ? `<div class="answer-insight"><strong>Why:</strong> ${escapeHtml(sections.whyHappened)}</div>` : ''}
-          ${hasUsefulText(sections.supportingEvidence) ? `<div class="answer-insight"><strong>Evidence:</strong><br/>${escapeHtml(sections.supportingEvidence).replace(/\n/g,'<br/>')}</div>` : ''}
-          ${hasUsefulText(sections.businessImpact) ? `<div class="answer-insight"><strong>Business impact:</strong> ${escapeHtml(sections.businessImpact)}</div>` : ''}
-          ${hasUsefulText(sections.recommendedAction) ? `<div class="answer-insight"><strong>Recommended action:</strong><br/>${escapeHtml(sections.recommendedAction).replace(/\n/g,'<br/>')}</div>` : ''}
+          ${showWhat ? `<div class="answer-insight"><strong>What happened:</strong> ${escapeHtml(sections.whatHappened)}</div>` : ''}
+          ${showWhy ? `<div class="answer-insight"><strong>Why:</strong> ${escapeHtml(sections.whyHappened)}</div>` : ''}
+          ${showEvidence ? `<div class="answer-insight"><strong>Evidence:</strong><br/>${escapeHtml(sections.supportingEvidence).replace(/\n/g,'<br/>')}</div>` : ''}
+          ${showImpact ? `<div class="answer-insight"><strong>Business impact:</strong> ${escapeHtml(sections.businessImpact)}</div>` : ''}
+          ${showAction ? `<div class="answer-insight"><strong>Recommended action:</strong><br/>${escapeHtml(sections.recommendedAction).replace(/\n/g,'<br/>')}</div>` : ''}
         </div>
       </details>`
     : '';
 
-  const decisionSupportLine = hasUsefulText(sections.recommendedAction)
+  const decisionSupportLine = showAction
     ? String(sections.recommendedAction).split(/\r?\n/).find(Boolean)
     : '';
 

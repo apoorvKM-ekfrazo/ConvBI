@@ -2246,7 +2246,7 @@ app.post('/api/interpret', async (req, res) => {
 
 app.post('/api/followup-suggestions', async (req, res) => {
   try {
-    const { question, sections, decodedIntent, rowsPreview } = req.body || {};
+    const { question, sections, decodedIntent, rowsPreview, conversationContext } = req.body || {};
     if (!question) return res.status(400).json({ error: 'Missing question.' });
 
     const fallbackSuggestions = buildFollowupSuggestionsFallback(question, sections || {}, decodedIntent || {});
@@ -2264,7 +2264,8 @@ app.post('/api/followup-suggestions', async (req, res) => {
       `Original Question: ${question}`,
       `Answer Sections: ${JSON.stringify(sections || {}, null, 2)}`,
       `Decoded Intent: ${JSON.stringify(decodedIntent || {}, null, 2)}`,
-      `Rows Preview: ${JSON.stringify((rowsPreview || []).slice(0, 20), null, 2)}`
+      `Rows Preview: ${JSON.stringify((rowsPreview || []).slice(0, 20), null, 2)}`,
+      `Conversation Context: ${JSON.stringify((Array.isArray(conversationContext) ? conversationContext : []).slice(-6), null, 2)}`
     ].join('\n\n');
 
     const out = await requestViaProviderManager({
