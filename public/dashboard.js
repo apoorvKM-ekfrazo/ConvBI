@@ -5,7 +5,7 @@ let loadedTables    = {};
 let allCharts       = [];    // echarts instances for resize
 let chartRegistry   = {};    // chartId -> echarts instance
 let chartMetaById   = {};    // chartId -> conversion state and source option
-let pendingCharts   = [];    // {id, option} waiting for their section to become visible
+let pendingCharts   = [];    // {id, option, renderOpts} waiting for their section to become visible
 let sidebarOpen     = true;
 let sourceModalState = { chartId: '', activeTab: 'sql' };
 
@@ -59,19 +59,25 @@ let workflowState = {
 
 // ── Section navigation ────────────────────────────────────────────────────────
 function showSection(name) {
+  const sectionName = ['overview', 'charts', 'tables', 'insights'].includes(name) ? name : 'overview';
   document.querySelectorAll('.db-section').forEach(s => s.classList.remove('active'));
-  document.getElementById('section-' + name)?.classList.add('active');
+  document.getElementById('section-' + sectionName)?.classList.add('active');
   document.querySelectorAll('.db-nav-item').forEach(a => {
-    a.classList.toggle('active', a.getAttribute('href') === '#' + name);
+    a.classList.toggle('active', a.getAttribute('href') === '#' + sectionName);
   });
   document.getElementById('breadcrumb').textContent =
-    { overview: 'Overview', charts: 'Charts', tables: 'Data Tables', insights: 'Saved Insights' }[name] || name;
+    { overview: 'Overview', charts: 'Charts', tables: 'Data Tables', insights: 'Saved Insights' }[sectionName] || sectionName;
+
+  const targetHash = '#' + sectionName;
+  if (window.location.hash !== targetHash) {
+    window.history.replaceState(null, '', targetHash);
+  }
 
   // Initialize any charts that were deferred because their section was hidden
   setTimeout(() => {
     const stillPending = [];
-    pendingCharts.forEach(({ id, option }) => {
-      if (!tryInitChart(id, option)) stillPending.push({ id, option });
+    pendingCharts.forEach(({ id, option, renderOpts }) => {
+      if (!tryInitChart(id, option, renderOpts)) stillPending.push({ id, option, renderOpts });
     });
     pendingCharts = stillPending;
     // Also resize already-initialized charts (handles layout reflows)
@@ -80,9 +86,10 @@ function showSection(name) {
 }
 
 // Normalize any ECharts option to the light palette before rendering
-function _normalizeOption(option) {
+function _normalizeOption(option, renderOpts = {}) {
   // Deep-clone to avoid mutating the source
   const opt = JSON.parse(JSON.stringify(option));
+  const forceDataLabels = !!renderOpts.forceDataLabels;
 
   const formatTwoDecimals = value => {
     if (value === null || value === undefined || value === '') return '';
@@ -90,6 +97,17 @@ function _normalizeOption(option) {
     const n = Number(value);
     if (Number.isFinite(n) && String(value).trim() !== '') return n.toFixed(2);
     return String(value);
+  };
+
+  const formatCompactValue = value => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return String(value ?? '');
+    const abs = Math.abs(n);
+    if (abs >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
+    if (abs >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
+    if (abs >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
+    if (abs >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+    return formatTwoDecimals(n);
   };
 
   // Strip built-in title/subtext — the card HTML header already shows them
@@ -105,7 +123,7 @@ function _normalizeOption(option) {
     ax.splitLine = lightSplit;
     ax.axisLabel = { ...lightLabel, ...(ax.axisLabel || {}), color: '#6B7280' };
     if ((ax.type === 'value' || ax.type === 'log') && !ax.axisLabel.formatter) {
-      ax.axisLabel.formatter = v => formatTwoDecimals(v);
+      ax.axisLabel.formatter = v => formatCompactValue(v);
     }
     return ax;
   };
@@ -178,19 +196,61 @@ function _normalizeOption(option) {
         return formatTwoDecimals(val);
       };
     }
+
+    // User preference: always show data labels across dashboard visuals.
+    if (forceDataLabels) {
+      const seriesType = String(s.type || '').toLowerCase();
+      const baseLabel = s.label || {};
+      const defaultPosition = seriesType === 'scatter' ? 'top' : (seriesType === 'pie' ? 'outside' : 'top');
+      const pointCount = Array.isArray(s.data) ? s.data.length : 0;
+
+      s.label = {
+        ...baseLabel,
+        show: true,
+        position: baseLabel.position || defaultPosition,
+        color: baseLabel.color || '#6B7280',
+        fontSize: baseLabel.fontSize || 10
+      };
+
+      s.label.formatter = params => {
+        const val = params?.value;
+        const raw = Array.isArray(val)
+          ? val[val.length - 1]
+          : (val && typeof val === 'object' && val.value !== undefined ? val.value : val);
+
+        const formatted = formatCompactValue(raw);
+        if (seriesType === 'pie') {
+          const name = String(params?.name || '').trim();
+          return name ? `${name}: ${formatted}` : formatted;
+        }
+        return formatted;
+      };
+
+      // Let ECharts resolve collisions between nearby labels.
+      s.labelLayout = {
+        ...(s.labelLayout || {}),
+        hideOverlap: false,
+        moveOverlap: seriesType === 'pie' ? 'shiftY' : 'shiftX'
+      };
+
+      if (seriesType === 'pie') {
+        s.label.overflow = 'truncate';
+        s.label.width = s.label.width || 130;
+      }
+    }
   });
 
   return opt;
 }
 
 // Try to initialize a chart — returns true if succeeded (element visible)
-function tryInitChart(id, option) {
+function tryInitChart(id, option, renderOpts = {}) {
   const el = document.getElementById(id);
   if (!el || typeof echarts === 'undefined') return false;
   if (el.offsetWidth === 0) return false;  // still hidden
   if (el._chartInited) return true;
   const chart = echarts.init(el);
-  chart.setOption({ ..._normalizeOption(option), backgroundColor: 'transparent' });
+  chart.setOption({ ..._normalizeOption(option, renderOpts), backgroundColor: 'transparent' });
   allCharts.push(chart);
   chartRegistry[id] = chart;
   el._chartInited = true;
@@ -816,9 +876,11 @@ function _syncChartTypeControls(state, value) {
 }
 
 function applyChartOption(chartId, option) {
+  const state = chartMetaById[chartId];
+  const renderOpts = state?.renderOpts || {};
   const chart = chartRegistry[chartId];
   if (chart) {
-    chart.setOption({ ..._normalizeOption(option), backgroundColor: 'transparent' }, true);
+    chart.setOption({ ..._normalizeOption(option, renderOpts), backgroundColor: 'transparent' }, true);
     try { chart.resize(); } catch (_) {}
     return true;
   }
@@ -826,6 +888,7 @@ function applyChartOption(chartId, option) {
   const pending = pendingCharts.find(p => p.id === chartId);
   if (pending) {
     pending.option = option;
+    pending.renderOpts = renderOpts;
     return true;
   }
   return false;
@@ -1017,6 +1080,7 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
   }
 
   const originalSource = _sourceMeta({}, 'auto', option);
+  const renderOpts = { forceDataLabels: true };
 
   chartMetaById[chartId] = {
     originalOption: option,
@@ -1034,7 +1098,8 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
     sourceLoading: false,
     sourceLoaded: false,
     sourceError: '',
-    lockDefaultOnLoad: !!lockDefaultOnLoad
+    lockDefaultOnLoad: !!lockDefaultOnLoad,
+    renderOpts
   };
 
   const convertEl = document.getElementById(convertId);
@@ -1049,8 +1114,9 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
 
   const cid = chartId;
   const opt = option;
+  const initRenderOpts = renderOpts;
   setTimeout(() => {
-    if (!tryInitChart(cid, opt)) pendingCharts.push({ id: cid, option: opt });
+    if (!tryInitChart(cid, opt, initRenderOpts)) pendingCharts.push({ id: cid, option: opt, renderOpts: initRenderOpts });
     // For AI-selected visuals, keep the suggested chart as the first-load default.
     if (chartMetaById[cid]?.lockDefaultOnLoad) {
       _syncChartTypeControls(chartMetaById[cid], 'auto');
@@ -1117,9 +1183,10 @@ async function loadDashboard() {
 
   await renderKPIStrip(samples);
   renderRelationshipMap(names, relData);
+  const sharedSmartDefs = await fetchRecommendedSmartCharts(names, 6);
   const [overviewCount, chartCount] = await Promise.all([
-    renderSmartCharts(names, 'overviewCharts', 2, samples),
-    renderSmartCharts(names, 'chartsSection', 6, samples)
+    renderSmartCharts(names, 'overviewCharts', 2, samples, sharedSmartDefs),
+    renderSmartCharts(names, 'chartsSection', 6, samples, sharedSmartDefs)
   ]);
   workflowState.step4 = (overviewCount + chartCount) > 0;
   renderWorkflowCoverage();
@@ -1600,12 +1667,7 @@ async function fetchTopVisualRecommendations(defs = [], limit = 6) {
   }
 }
 
-// ── Smart chart gallery (uses /api/charts/:tableName pipeline) ────────────────
-async function renderSmartCharts(tableNames, containerId, maxCharts, samplesForFallback = {}) {
-  const container = document.getElementById(containerId);
-  if (!container) return;
-  container.innerHTML = '<div style="padding:16px;color:var(--text-muted);font-size:13px">Selecting best charts…</div>';
-
+async function fetchRecommendedSmartCharts(tableNames, maxCharts) {
   const allDefs = [];
 
   await Promise.all(tableNames.slice(0, 6).map(async tableName => {
@@ -1619,8 +1681,9 @@ async function renderSmartCharts(tableNames, containerId, maxCharts, samplesForF
     } catch (_) {}
   }));
 
-  // Sort by score descending and then run AI/global diversity selection.
-  allDefs.sort((a, b) => b.score - a.score);
+  if (!allDefs.length) return [];
+
+  allDefs.sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
   const aiRecommended = await fetchTopVisualRecommendations(allDefs, maxCharts);
   const byKey = new Map(allDefs.map(d => [d.key, d]));
   const selected = [];
@@ -1634,15 +1697,25 @@ async function renderSmartCharts(tableNames, containerId, maxCharts, samplesForF
     seen.add(key);
   });
 
-  // Only use local fallback when recommender returns nothing.
   if (!aiRecommended.length && selected.length < maxCharts) {
     deterministicTopVisuals(allDefs, maxCharts).forEach(def => {
-      if (selected.length >= maxCharts) return;
-      if (seen.has(def.key)) return;
+      if (selected.length >= maxCharts || seen.has(def.key)) return;
       selected.push(def);
       seen.add(def.key);
     });
   }
+
+  return selected.slice(0, maxCharts);
+}
+
+// ── Smart chart gallery (uses /api/charts/:tableName pipeline) ────────────────
+async function renderSmartCharts(tableNames, containerId, maxCharts, samplesForFallback = {}, preselectedDefs = null) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = '<div style="padding:16px;color:var(--text-muted);font-size:13px">Selecting best charts…</div>';
+  const selected = Array.isArray(preselectedDefs) && preselectedDefs.length
+    ? preselectedDefs.slice(0, maxCharts)
+    : await fetchRecommendedSmartCharts(tableNames, maxCharts);
 
   container.innerHTML = '';
   let count = 0;
@@ -2114,6 +2187,11 @@ window.addEventListener('storage', e => {
   if (e.key === 'convbi_tables_updated') loadDashboard();
 });
 
+window.addEventListener('hashchange', () => {
+  const section = String(window.location.hash || '').replace('#', '').trim();
+  if (section) showSection(section);
+});
+
 // Restore sidebar state from localStorage
 (function() {
   if (localStorage.getItem('sidebarCollapsed') === 'true') {
@@ -2131,4 +2209,6 @@ document.addEventListener('keydown', e => {
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+const initialSection = String(window.location.hash || '').replace('#', '').trim() || 'overview';
+showSection(initialSection);
 loadDashboard();
