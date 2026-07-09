@@ -10,29 +10,55 @@
 </head>
 <body>
 <div class="app-shell">
-  <aside class="left-rail" id="leftRail" aria-label="Primary navigation">
+  <aside class="left-rail auto-collapsed" id="leftRail" aria-label="Primary navigation">
     <div class="rail-brand">
       <div class="rail-logo">CI</div>
       <div class="rail-name-wrap">
         <div class="rail-name">ConI</div>
         <div class="rail-sub">Conversational BI</div>
       </div>
-      <button class="rail-collapse" id="railCollapseBtn" title="Collapse navigation" aria-label="Collapse navigation">&#10094;</button>
+      <button class="rail-collapse" id="railCollapseBtn" title="Pin expanded navigation" aria-label="Pin expanded navigation">&#128204;</button>
     </div>
 
     <nav class="rail-nav">
       <button class="rail-link tab active" data-nav-tab="input" onclick="switchTab('input')">
         <span class="rail-ico">&#x21E7;</span>
-        <span class="rail-label">Data Input</span>
+        <span class="rail-label-wrap">
+          <span class="rail-label">Data Input</span>
+          <span class="rail-meta">Connect and prepare data</span>
+        </span>
       </button>
+      <div class="rail-subnav" aria-label="Data input actions">
+        <button class="rail-subnav-item" onclick="switchTab('input');switchSourceTab('files')">Upload files</button>
+        <button class="rail-subnav-item" onclick="switchTab('input');switchSourceTab('databricks')">Databricks</button>
+        <button class="rail-subnav-item" onclick="switchTab('input');switchSourceTab('s3')">AWS S3</button>
+      </div>
+
       <a class="rail-link tab nav-lock" id="dashboardNav" data-nav-tab="dashboard" href="/dashboard" data-locked-title="Load a table to begin" onclick="return handleLockedNav(event, this)">
         <span class="rail-ico">&#x25A6;</span>
-        <span class="rail-label">Dashboard</span>
+        <span class="rail-label-wrap">
+          <span class="rail-label">Dashboard</span>
+          <span class="rail-meta">Visual analytics and KPIs</span>
+        </span>
       </a>
+      <div class="rail-subnav" aria-label="Dashboard actions">
+        <a class="rail-subnav-item" href="/dashboard#overview" onclick="return handleLockedNav(event, document.getElementById('dashboardNav'))">Overview</a>
+        <a class="rail-subnav-item" href="/dashboard#charts" onclick="return handleLockedNav(event, document.getElementById('dashboardNav'))">Charts</a>
+        <a class="rail-subnav-item" href="/dashboard#tables" onclick="return handleLockedNav(event, document.getElementById('dashboardNav'))">Table explorer</a>
+      </div>
+
       <button class="rail-link tab nav-lock" id="askNav" data-nav-tab="qa" data-locked-title="Load a table to begin" onclick="switchTab('qa')">
         <span class="rail-ico">&#x270E;</span>
-        <span class="rail-label">Ask Questions</span>
+        <span class="rail-label-wrap">
+          <span class="rail-label">Ask Questions</span>
+          <span class="rail-meta">Business Q&A with SQL trace</span>
+        </span>
       </button>
+      <div class="rail-subnav" aria-label="Question actions">
+        <button class="rail-subnav-item" onclick="switchTab('qa')">Suggested questions</button>
+        <button class="rail-subnav-item" onclick="switchTab('qa');document.getElementById('qaInput')?.focus()">Custom question</button>
+        <button class="rail-subnav-item" onclick="switchTab('qa');selectAllTables()">Ask across all tables</button>
+      </div>
     </nav>
 
     <div class="rail-tables-badge" id="tablesLoadedBadge" aria-live="polite">Tables loaded: 0</div>
@@ -185,6 +211,29 @@
           </div>
         </div>
         <div id="tableLibraryList" class="table-library-grid"></div>
+      </div>
+    </div>
+
+    <div id="analyticsFlowSection" class="analytics-flow" style="display:none">
+      <div class="card flow-card reveal-on-scroll">
+        <div class="flow-head">
+          <div>
+            <div class="flow-kicker">Post Upload Workflow</div>
+            <h3>Select Tables, Validate Structure, Then Analyze</h3>
+            <p>Upload does not jump to dashboard anymore. Choose the exact tables for analytics first.</p>
+          </div>
+          <div class="flow-step-pill" id="flowStepPill">Step 1 of 3</div>
+        </div>
+
+        <div class="flow-steps" id="flowSteps">
+          <button class="flow-step-item active" data-step="1" onclick="goToAnalyticsFlowStep(1)">1. Select Tables</button>
+          <button class="flow-step-item" data-step="2" onclick="goToAnalyticsFlowStep(2)">2. Table Structure</button>
+          <button class="flow-step-item" data-step="3" onclick="goToAnalyticsFlowStep(3)">3. Relations &amp; Glossary</button>
+        </div>
+
+        <div id="flowStepSelect" class="flow-panel"></div>
+        <div id="flowStepStructure" class="flow-panel" style="display:none"></div>
+        <div id="flowStepRelation" class="flow-panel" style="display:none"></div>
       </div>
     </div>
   </div>

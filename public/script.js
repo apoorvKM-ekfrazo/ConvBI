@@ -13,6 +13,9 @@ let isLoadingDynamicChips = false;
 let currentFollowupPrompts = [];
 const askedFollowupPromptSet = new Set();
 let tableLibraryView = localStorage.getItem('convbi_table_library_view') || 'grid';
+let analyticsFlowStep = 1;
+let selectedAnalyticsTables = new Set();
+let glossaryMap = {};
 
 const WORKFLOW_LABELS = {
   6: 'User Asks Business Question',
@@ -28,8 +31,14 @@ let dbBrowserState = { catalog: null, schema: null, table: null };
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(name) {
-  if ((name === 'qa' || name === 'dashboard') && !Object.keys(loadedTables || {}).length) {
+  const hasData = Object.keys(loadedTables || {}).length > 0;
+  const hasScope = selectedAnalyticsTables.size > 0;
+  if ((name === 'qa' || name === 'dashboard') && !hasData) {
     showError('Load a table to begin.');
+    return;
+  }
+  if ((name === 'qa' || name === 'dashboard') && hasData && !hasScope) {
+    showError('Select at least one table in Post Upload Workflow before analytics.');
     return;
   }
 
@@ -46,23 +55,27 @@ function switchTab(name) {
 
 function handleLockedNav(event, el) {
   const hasData = Object.keys(loadedTables || {}).length > 0;
-  if (hasData) return true;
+  const hasScope = selectedAnalyticsTables.size > 0;
+  if (hasData && hasScope) return true;
   if (event) event.preventDefault();
-  const reason = el?.getAttribute('data-locked-title') || 'Load a table to begin.';
+  const reason = !hasData
+    ? (el?.getAttribute('data-locked-title') || 'Load a table to begin.')
+    : 'Select at least one table in Post Upload Workflow before analytics.';
   showError(reason);
   return false;
 }
 
 function syncAppNavigationState() {
   const hasData = Object.keys(loadedTables || {}).length > 0;
+  const hasScope = selectedAnalyticsTables.size > 0;
   const askNav = document.getElementById('askNav');
   const dashNav = document.getElementById('dashboardNav');
   [askNav, dashNav].forEach(el => {
     if (!el) return;
-    el.classList.toggle('nav-lock', !hasData);
-    if (!hasData) {
+    el.classList.toggle('nav-lock', !(hasData && hasScope));
+    if (!(hasData && hasScope)) {
       el.setAttribute('aria-disabled', 'true');
-      el.setAttribute('title', 'Load a table to begin');
+      el.setAttribute('title', !hasData ? 'Load a table to begin' : 'Select at least one table before analytics');
     } else {
       el.removeAttribute('aria-disabled');
       el.removeAttribute('title');
@@ -176,29 +189,32 @@ function setWorkflowRuntime(step, detail) {
 
 function syncQAAvailability() {
   const hasData = Object.keys(loadedTables || {}).length > 0;
+  const hasScope = selectedAnalyticsTables.size > 0;
   const card = document.getElementById('qaQuestionCard');
   const guard = document.getElementById('qaGuardMessage');
   const input = document.getElementById('qaInput');
   const askBtn = document.getElementById('askBtn');
   const followupRail = document.getElementById('followupRail');
 
-  if (card) card.style.display = hasData ? '' : 'none';
+  if (card) card.style.display = (hasData && hasScope) ? '' : 'none';
   if (guard) {
-    guard.style.display = hasData ? 'none' : '';
+    guard.style.display = (hasData && hasScope) ? 'none' : '';
     if (!hasData) {
       guard.innerHTML = '<strong>No dataset loaded.</strong> Please upload files and click <strong>Load files into analytics</strong> before asking KPI/business questions.';
+    } else if (!hasScope) {
+      guard.innerHTML = '<strong>Analytics scope is not set.</strong> Use <strong>Post Upload Workflow</strong> in Data Input to select tables, review structure, and apply them.';
     }
   }
   if (input) {
-    input.disabled = !hasData;
-    if (!hasData) input.value = '';
+    input.disabled = !(hasData && hasScope);
+    if (!(hasData && hasScope)) input.value = '';
   }
-  if (askBtn) askBtn.disabled = !hasData;
-  if (!hasData && followupRail) followupRail.style.display = 'none';
+  if (askBtn) askBtn.disabled = !(hasData && hasScope);
+  if (!(hasData && hasScope) && followupRail) followupRail.style.display = 'none';
 
   syncAppNavigationState();
 
-  return hasData;
+  return hasData && hasScope;
 }
 
 function getDynamicChipFallback() {
@@ -256,7 +272,7 @@ async function loadDynamicQuestionChips() {
   isLoadingDynamicChips = true;
 
   try {
-    const tableNames = Object.keys(loadedTables || {});
+    const tableNames = [...selectedAnalyticsTables].filter(t => loadedTables[t]);
     const hasData = syncQAAvailability();
     if (!hasData || !tableNames.length) {
       return;
@@ -508,11 +524,10 @@ async function uploadStagedFiles() {
     if (q) q.style.display = 'none';
 
     const count = data.tables.length;
-    showSuccess(`${count} table${count>1?'s':''} loaded! Opening dashboard…`);
+    showSuccess(`${count} table${count>1?'s':''} loaded. Continue with table selection workflow.`);
     await refreshTableLibrary();
-    switchTab('qa');
-    // Open dashboard in new tab after a short delay so the success message is seen
-    setTimeout(() => window.open('/dashboard', '_blank'), 800);
+    switchTab('input');
+    goToAnalyticsFlowStep(1);
   } catch (e) {
     setUploadVisualState('error');
     showError('Upload error: ' + e.message);
@@ -531,7 +546,12 @@ async function refreshTableLibrary() {
     const res  = await fetch(`${API}/api/tables`);
     const data = await res.json();
     loadedTables = data.tables || {};
+    loadAnalyticsPreferences();
+    selectedAnalyticsTables = new Set([...selectedAnalyticsTables].filter(t => loadedTables[t]));
+    activeTableSet = new Set(selectedAnalyticsTables);
+    persistAnalyticsPreferences();
     renderTableLibrary();
+    renderAnalyticsFlowSection();
     updateLoadedTablesBadge();
     syncQAAvailability();
     refreshTableContextBar();
@@ -563,8 +583,308 @@ function renderTableLibrary() {
   }).join('');
 }
 
+function loadAnalyticsPreferences() {
+  try {
+    const storedTables = JSON.parse(localStorage.getItem('convbi_selected_tables') || '[]');
+    selectedAnalyticsTables = new Set((storedTables || []).filter(t => loadedTables[t]));
+  } catch (_) {
+    selectedAnalyticsTables = new Set();
+  }
+  try {
+    glossaryMap = JSON.parse(localStorage.getItem('convbi_glossary') || '{}') || {};
+  } catch (_) {
+    glossaryMap = {};
+  }
+}
+
+function persistAnalyticsPreferences() {
+  localStorage.setItem('convbi_selected_tables', JSON.stringify([...selectedAnalyticsTables]));
+  localStorage.setItem('convbi_glossary', JSON.stringify(glossaryMap || {}));
+}
+
+function goToAnalyticsFlowStep(step) {
+  const requested = Math.max(1, Math.min(3, Number(step) || 1));
+  if (requested > 1 && !selectedAnalyticsTables.size) {
+    showError('Select at least one table in Step 1 first.');
+    analyticsFlowStep = 1;
+  } else {
+    analyticsFlowStep = requested;
+  }
+  document.querySelectorAll('.flow-step-item').forEach(el => {
+    el.classList.toggle('active', Number(el.getAttribute('data-step')) === analyticsFlowStep);
+  });
+  const pill = document.getElementById('flowStepPill');
+  if (pill) pill.textContent = `Step ${analyticsFlowStep} of 3`;
+
+  const step1 = document.getElementById('flowStepSelect');
+  const step2 = document.getElementById('flowStepStructure');
+  const step3 = document.getElementById('flowStepRelation');
+  if (step1) step1.style.display = analyticsFlowStep === 1 ? '' : 'none';
+  if (step2) step2.style.display = analyticsFlowStep === 2 ? '' : 'none';
+  if (step3) step3.style.display = analyticsFlowStep === 3 ? '' : 'none';
+
+  if (analyticsFlowStep === 2) renderAnalyticsStructureStep();
+  if (analyticsFlowStep === 3) renderAnalyticsRelationStep();
+}
+
+function toggleAnalyticsTable(name) {
+  if (!loadedTables[name]) return;
+  selectedAnalyticsTables.has(name) ? selectedAnalyticsTables.delete(name) : selectedAnalyticsTables.add(name);
+  persistAnalyticsPreferences();
+  renderAnalyticsFlowStepSelect();
+  syncQAAvailability();
+}
+
+function selectAllAnalyticsTables() {
+  Object.keys(loadedTables).forEach(name => selectedAnalyticsTables.add(name));
+  persistAnalyticsPreferences();
+  renderAnalyticsFlowStepSelect();
+  syncQAAvailability();
+}
+
+function clearAnalyticsTableSelection() {
+  selectedAnalyticsTables.clear();
+  persistAnalyticsPreferences();
+  renderAnalyticsFlowStepSelect();
+  syncQAAvailability();
+}
+
+function renderAnalyticsFlowStepSelect() {
+  const host = document.getElementById('flowStepSelect');
+  if (!host) return;
+  const names = Object.keys(loadedTables);
+  if (!names.length) {
+    host.innerHTML = '<div class="no-data">Upload data first to start table selection.</div>';
+    return;
+  }
+
+  host.innerHTML = `
+    <div class="flow-table-grid">
+      ${names.map(name => {
+        const t = loadedTables[name] || {};
+        const checked = selectedAnalyticsTables.has(name);
+        return `<div class="flow-table-item ${checked ? 'active' : ''}" onclick="toggleAnalyticsTable('${escapeHtml(name)}')">
+          <div class="flow-table-head">
+            <input type="checkbox" ${checked ? 'checked' : ''} tabindex="-1" aria-hidden="true" />
+            <div class="flow-table-name">${escapeHtml(name)}</div>
+          </div>
+          <div class="flow-meta">
+            <span>${(t.rowCount || 0).toLocaleString()} rows</span>
+            <span>${(t.columns || []).length} columns</span>
+            <span>${escapeHtml(t.source || 'file')}</span>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="flow-actions">
+      <button class="flow-btn-secondary" onclick="selectAllAnalyticsTables()">Select All</button>
+      <button class="flow-btn-secondary" onclick="clearAnalyticsTableSelection()">Clear</button>
+      <button class="submit-btn" onclick="goToStructureStep()">Next: Table Structure</button>
+    </div>
+  `;
+}
+
+async function goToStructureStep() {
+  if (!selectedAnalyticsTables.size) {
+    showError('Select at least one table to continue.');
+    return;
+  }
+  goToAnalyticsFlowStep(2);
+  await renderAnalyticsStructureStep();
+}
+
+function sqlQuoteIdent(name) {
+  return `"${String(name || '').replace(/"/g, '""')}"`;
+}
+
+async function renderAnalyticsStructureStep() {
+  const host = document.getElementById('flowStepStructure');
+  if (!host) return;
+  host.innerHTML = '<div class="no-data">Loading structure details...</div>';
+
+  const names = [...selectedAnalyticsTables].filter(n => loadedTables[n]);
+  const cards = [];
+
+  for (const name of names) {
+    const meta = loadedTables[name] || {};
+    let sampleRows = [];
+    try {
+      const res = await fetch(`${API}/api/execute-sql`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sql: `SELECT * FROM ${sqlQuoteIdent(name)} LIMIT 5` })
+      });
+      const data = await res.json();
+      sampleRows = Array.isArray(data.rows) ? data.rows : [];
+    } catch (_) {}
+
+    const cols = (meta.columns || []).slice(0, 24);
+    const sampleHeaders = cols.slice(0, 8).map(c => c.name);
+    cards.push(`
+      <div class="flow-structure-card">
+        <div class="flow-table-head" style="margin-bottom:8px">
+          <div class="flow-table-name">${escapeHtml(name)}</div>
+        </div>
+        <div class="flow-meta" style="margin-bottom:8px">
+          <span>${(meta.rowCount || 0).toLocaleString()} rows</span>
+          <span>${cols.length} columns shown</span>
+          <span>${escapeHtml(meta.source || 'file')}</span>
+        </div>
+        <div class="flow-mini-table-wrap" style="margin-bottom:8px">
+          <table class="flow-mini-table">
+            <thead><tr><th>Column</th><th>Type</th></tr></thead>
+            <tbody>${cols.map(c => `<tr><td>${escapeHtml(c.name || '')}</td><td>${escapeHtml(c.type || '')}</td></tr>`).join('')}</tbody>
+          </table>
+        </div>
+        <div class="flow-mini-table-wrap">
+          <table class="flow-mini-table">
+            <thead><tr>${sampleHeaders.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
+            <tbody>
+              ${(sampleRows || []).slice(0, 5).map(r => `<tr>${sampleHeaders.map(h => `<td>${escapeHtml(String(r[h] ?? ''))}</td>`).join('')}</tr>`).join('') || '<tr><td colspan="8">No sample rows</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `);
+  }
+
+  host.innerHTML = `${cards.join('')}<div class="flow-actions"><button class="flow-btn-secondary" onclick="goToAnalyticsFlowStep(1)">Back</button><button class="submit-btn" onclick="goToRelationStep()">Next: Relationships & Glossary</button></div>`;
+}
+
+function detectCommonColumns(tableNames) {
+  const map = {};
+  tableNames.forEach(t => {
+    (loadedTables[t]?.columns || []).forEach(c => {
+      const key = String(c.name || '').toLowerCase();
+      if (!key) return;
+      if (!map[key]) map[key] = [];
+      map[key].push(t);
+    });
+  });
+  return Object.entries(map)
+    .filter(([, tables]) => tables.length > 1)
+    .map(([col, tables]) => ({ col, tables }))
+    .sort((a, b) => b.tables.length - a.tables.length)
+    .slice(0, 20);
+}
+
+async function goToRelationStep() {
+  if (!selectedAnalyticsTables.size) {
+    showError('Select at least one table first.');
+    return;
+  }
+  goToAnalyticsFlowStep(3);
+  await renderAnalyticsRelationStep();
+}
+
+async function renderAnalyticsRelationStep() {
+  const host = document.getElementById('flowStepRelation');
+  if (!host) return;
+  host.innerHTML = '<div class="no-data">Detecting relationships and preparing glossary...</div>';
+
+  const selectedNames = [...selectedAnalyticsTables].filter(n => loadedTables[n]);
+  let relData = { joins: [], noRelation: [] };
+  try {
+    const relRes = await fetch(`${API}/api/detect-relationships`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+    });
+    relData = relRes.ok ? await relRes.json() : relData;
+  } catch (_) {}
+
+  const joins = (relData.joins || []).filter(j => selectedNames.includes(j.tableA) && selectedNames.includes(j.tableB));
+  const commons = detectCommonColumns(selectedNames);
+
+  const glossaryRows = [];
+  selectedNames.forEach(tableName => {
+    (loadedTables[tableName]?.columns || []).slice(0, 30).forEach(c => {
+      const key = `${tableName}.${c.name}`;
+      glossaryRows.push(`
+        <tr>
+          <td>${escapeHtml(tableName)}</td>
+          <td>${escapeHtml(c.name || '')}</td>
+          <td><input class="flow-glossary-input" data-glossary-key="${escapeHtml(key)}" value="${escapeHtml(glossaryMap[key] || '')}" placeholder="Example: date2 means date of birth" /></td>
+        </tr>
+      `);
+    });
+  });
+
+  host.innerHTML = `
+    <div class="flow-rel-grid">
+      <div class="flow-rel-box">
+        <div style="font-weight:700;margin-bottom:8px">Detected Join Relationships</div>
+        ${(joins.map(j => `<div class="flow-rel-item">${escapeHtml(j.tableA)}.${escapeHtml(j.columnA)} -> ${escapeHtml(j.tableB)}.${escapeHtml(j.columnB)} <span style="color:var(--text-secondary)">(${Math.round((j.confidence || 0) * 100)}% confidence)</span></div>`).join('')) || '<div class="flow-rel-item">No strong joins detected across selected tables.</div>'}
+      </div>
+      <div class="flow-rel-box">
+        <div style="font-weight:700;margin-bottom:8px">Common Columns Across Tables</div>
+        ${(commons.map(c => `<div class="flow-rel-item">${escapeHtml(c.col)} shared by ${escapeHtml(c.tables.join(', '))}</div>`).join('')) || '<div class="flow-rel-item">No common columns detected.</div>'}
+      </div>
+    </div>
+
+    <div class="flow-rel-box" style="margin-top:10px">
+      <div style="font-weight:700;margin-bottom:8px">Business Glossary (Column Instructions)</div>
+      <div class="flow-mini-table-wrap">
+        <table class="flow-glossary-table">
+          <thead><tr><th>Table</th><th>Column</th><th>Business meaning / instruction</th></tr></thead>
+          <tbody>${glossaryRows.join('')}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="flow-actions">
+      <button class="flow-btn-secondary" onclick="goToAnalyticsFlowStep(2)">Back</button>
+      <button class="flow-btn-secondary" onclick="saveGlossaryFromUI()">Save Glossary</button>
+      <button class="submit-btn" onclick="applyAnalyticsSelection()">Apply Selection to Analytics</button>
+    </div>
+  `;
+}
+
+function saveGlossaryFromUI() {
+  document.querySelectorAll('[data-glossary-key]').forEach(input => {
+    const key = input.getAttribute('data-glossary-key');
+    const val = String(input.value || '').trim();
+    if (!key) return;
+    if (!val) delete glossaryMap[key];
+    else glossaryMap[key] = val;
+  });
+  persistAnalyticsPreferences();
+  showSuccess('Glossary saved for analytics context.');
+}
+
+function applyAnalyticsSelection() {
+  if (!selectedAnalyticsTables.size) {
+    showError('Choose tables before applying analytics scope.');
+    return;
+  }
+  saveGlossaryFromUI();
+  activeTableSet = new Set(selectedAnalyticsTables);
+  persistAnalyticsPreferences();
+  syncQAAvailability();
+  refreshTableContextBar();
+  showSuccess(`Analytics scope applied for ${selectedAnalyticsTables.size} table${selectedAnalyticsTables.size > 1 ? 's' : ''}. Continue in Ask Questions.`);
+  switchTab('qa');
+}
+
+function renderAnalyticsFlowSection() {
+  const section = document.getElementById('analyticsFlowSection');
+  if (!section) return;
+  const hasData = Object.keys(loadedTables || {}).length > 0;
+  section.style.display = hasData ? '' : 'none';
+  if (!hasData) return;
+
+  if (!selectedAnalyticsTables.size) {
+    goToAnalyticsFlowStep(1);
+  } else {
+    goToAnalyticsFlowStep(analyticsFlowStep);
+  }
+  renderAnalyticsFlowStepSelect();
+}
+
 async function removeTable(name) {
   await fetch(`${API}/api/tables/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  selectedAnalyticsTables.delete(name);
+  [...Object.keys(glossaryMap || {})]
+    .filter(k => k.startsWith(`${name}.`))
+    .forEach(k => delete glossaryMap[k]);
+  persistAnalyticsPreferences();
   await refreshTableLibrary();
 }
 
@@ -574,7 +894,7 @@ function refreshTableContextBar() {
   const chips = document.getElementById('tableContextChips');
   if (!bar || !chips) return;
   syncQAAvailability();
-  const names = Object.keys(loadedTables);
+  const names = [...selectedAnalyticsTables].filter(n => loadedTables[n]);
   if (!names.length) {
     bar.style.display = 'none';
     return;
@@ -582,6 +902,9 @@ function refreshTableContextBar() {
   bar.style.display = '';
   // Default: all active
   if (!activeTableSet.size) names.forEach(n => activeTableSet.add(n));
+  [...activeTableSet].forEach(n => {
+    if (!names.includes(n)) activeTableSet.delete(n);
+  });
   chips.innerHTML = names.map(n =>
     `<button class="ctx-chip ${activeTableSet.has(n)?'ctx-chip-on':''}" onclick="toggleTableCtx('${escapeHtml(n)}')">${escapeHtml(n)}</button>`
   ).join('');
@@ -592,7 +915,7 @@ function toggleTableCtx(name) {
   refreshTableContextBar();
 }
 function selectAllTables() {
-  Object.keys(loadedTables).forEach(n => activeTableSet.add(n));
+  [...selectedAnalyticsTables].forEach(n => activeTableSet.add(n));
   refreshTableContextBar();
 }
 
@@ -700,7 +1023,8 @@ async function renderInlineDashboard() {
 
 async function buildAllTableSchemas() {
   const schemas = {};
-  const inScope = activeTableSet.size ? activeTableSet : new Set(Object.keys(loadedTables));
+  const baseScope = selectedAnalyticsTables.size ? selectedAnalyticsTables : new Set(Object.keys(loadedTables));
+  const inScope = activeTableSet.size ? activeTableSet : baseScope;
   for (const name of inScope) {
     const t = loadedTables[name];
     if (!t) continue;
@@ -733,6 +1057,19 @@ QUERY RULES:
 - IQR outlier: percentile_cont(0.25/0.75) WITHIN GROUP (ORDER BY col)
 - For cross-table queries, use JOIN when common columns exist
 - For independent tables with no join, use UNION ALL with a source_table column`;
+
+  const scope = [...selectedAnalyticsTables].filter(t => schemas[t]);
+  if (scope.length) {
+    rules += `\n\nANALYTICS SCOPE:\n- Prefer these tables first: ${scope.join(', ')}`;
+  }
+
+  const glossaryEntries = Object.entries(glossaryMap || {}).filter(([, v]) => String(v || '').trim());
+  if (glossaryEntries.length) {
+    rules += '\n\nBUSINESS GLOSSARY OVERRIDES:';
+    glossaryEntries.slice(0, 120).forEach(([k, v]) => {
+      rules += `\n- ${k}: ${String(v).trim()}`;
+    });
+  }
   return rules;
 }
 
@@ -752,7 +1089,7 @@ async function askQuestion() {
   currentFollowupPrompts = currentFollowupPrompts.filter(p => normalizePromptText(p) !== normalizePromptText(q));
   refreshFollowupRailCurrentList();
 
-  const tables = Object.keys(loadedTables);
+  const tables = [...selectedAnalyticsTables].filter(t => loadedTables[t]);
   if (!tables.length) { showError('Load some data first.'); return; }
 
   isAsking = true;
@@ -1560,8 +1897,8 @@ async function loadDatabricksTable() {
       });
       showSuccess(`Table "${table}" loaded — ${data.rows.length} rows.`);
       await refreshTableLibrary();
-      switchTab('qa');
-      setTimeout(() => window.open('/dashboard', '_blank'), 800);
+      switchTab('input');
+      goToAnalyticsFlowStep(1);
     }
   } catch (e) {
     showError('Load error: ' + e.message);
@@ -1722,7 +2059,8 @@ async function loadS3File(key, btn) {
     if (btn) { btn.textContent = 'Loaded ✓'; btn.style.background = 'var(--green, #16a34a)'; }
 
     await refreshTableLibrary();
-    setTimeout(() => switchTab('qa'), 800);
+    switchTab('input');
+    goToAnalyticsFlowStep(1);
   } catch (e) {
     showError('S3 load failed: ' + e.message);
     if (btn) { btn.textContent = origText; btn.disabled = false; }
@@ -1739,6 +2077,23 @@ function updateVoiceSpeed(v)  {
   if (voiceMgr) voiceMgr.setSpeed(parseFloat(v));
 }
 
+function setupScrollReveal() {
+  const nodes = document.querySelectorAll('.reveal-on-scroll');
+  if (!nodes.length || typeof IntersectionObserver === 'undefined') {
+    nodes.forEach(n => n.classList.add('revealed'));
+    return;
+  }
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('revealed');
+        io.unobserve(entry.target);
+      }
+    });
+  }, { threshold: 0.16 });
+  nodes.forEach(n => io.observe(n));
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 (async () => {
   const loadBtn = document.getElementById('loadBtn');
@@ -1752,8 +2107,11 @@ function updateVoiceSpeed(v)  {
 
   const railBtn = document.getElementById('railCollapseBtn');
   railBtn?.addEventListener('click', () => {
-    document.getElementById('leftRail')?.classList.toggle('collapsed');
-    railBtn.innerHTML = document.getElementById('leftRail')?.classList.contains('collapsed') ? '&#10095;' : '&#10094;';
+    const rail = document.getElementById('leftRail');
+    if (!rail) return;
+    rail.classList.toggle('pinned');
+    railBtn.innerHTML = rail.classList.contains('pinned') ? '&#128275;' : '&#128204;';
+    railBtn.title = rail.classList.contains('pinned') ? 'Unpin navigation hover expansion' : 'Pin expanded navigation';
   });
 
   const themeBtn = document.getElementById('themeToggleBtn');
@@ -1799,4 +2157,6 @@ function updateVoiceSpeed(v)  {
       onError: (msg) => showError('Voice: ' + msg)
     });
   }
+
+  setupScrollReveal();
 })();
