@@ -608,6 +608,389 @@ app.post('/api/save-cache', (req, res) => {
   res.json({ ok: true });
 });
 
+function prettyLabel(name) {
+  return String(name || '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function shortText(value, maxLen = 36) {
+  const s = String(value == null ? '' : value).trim();
+  if (!s) return '';
+  return s.length > maxLen ? s.slice(0, maxLen - 3) + '...' : s;
+}
+
+function formatNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value ?? '');
+  if (Math.abs(n) >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (Math.abs(n) >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  return n.toFixed(2).replace(/\.00$/, '');
+}
+
+function isLikelyIdentifier(name) {
+  return /(^id$|_id$|^id_|code$|_code$|key$|_key$|index$|idx$)/i.test(String(name || ''));
+}
+
+function scoreMetricName(name) {
+  const n = String(name || '').toLowerCase();
+  let score = 0;
+  if (/(revenue|sales|profit|amount|total|cost|margin|value)/.test(n)) score += 5;
+  if (/(qty|quantity|units|count|volume|util|utilisation|rate|price|downtime)/.test(n)) score += 3;
+  if (/(id|code|key)$/.test(n)) score -= 4;
+  return score;
+}
+
+function scoreDimensionName(name) {
+  const n = String(name || '').toLowerCase();
+  let score = 0;
+  if (/(region|country|state|city|zone|segment|category|channel|product|customer|shift|team|department)/.test(n)) score += 5;
+  if (/(name|type|group|class|status)/.test(n)) score += 2;
+  if (/(id|code|key)$/.test(n)) score -= 5;
+  return score;
+}
+
+function defaultDatasetSuggestions() {
+  return [
+    {
+      label: 'Insight Starters',
+      prompts: [
+        'Which segment contributes most to overall performance?',
+        'What changed most in the latest period versus previous period?',
+        'Which metric shows the strongest risk signal?'
+      ]
+    },
+    {
+      label: 'Drivers & Root Cause',
+      prompts: [
+        'What explains why the top segment is leading?',
+        'Which factors separate top and bottom performers?',
+        'What is the likely root cause of the latest decline or spike?'
+      ]
+    },
+    {
+      label: 'Risk & Outliers',
+      prompts: [
+        'Which records look like outliers?',
+        'Which segment is consistently underperforming?',
+        'Where is performance concentration creating business risk?'
+      ]
+    },
+    {
+      label: 'Trends & Forecasts',
+      prompts: [
+        'Is the key metric improving or declining over time?',
+        'When did trend direction change most recently?',
+        'Forecast next 3 periods and highlight uncertainty.'
+      ]
+    }
+  ];
+}
+
+async function collectInsightSignalsForTable(tableName, metric, dim, timeCol) {
+  const safeTable = toSafeIdent(tableName);
+  const out = {
+    topValue: null,
+    topMetric: null,
+    bottomValue: null,
+    bottomMetric: null,
+    topShare: null,
+    latestPeriod: null,
+    latestValue: null,
+    prevPeriod: null,
+    prevValue: null,
+    trendDeltaPct: null
+  };
+
+  if (metric && dim) {
+    const safeMetric = toSafeIdent(metric);
+    const safeDim = toSafeIdent(dim);
+    const topSql = `SELECT "${safeDim}" AS v, SUM("${safeMetric}") AS m FROM "${safeTable}" WHERE "${safeDim}" IS NOT NULL AND "${safeMetric}" IS NOT NULL GROUP BY 1 ORDER BY m DESC LIMIT 1`;
+    const bottomSql = `SELECT "${safeDim}" AS v, SUM("${safeMetric}") AS m FROM "${safeTable}" WHERE "${safeDim}" IS NOT NULL AND "${safeMetric}" IS NOT NULL GROUP BY 1 ORDER BY m ASC LIMIT 1`;
+    const totalSql = `SELECT SUM("${safeMetric}") AS total_m FROM "${safeTable}" WHERE "${safeMetric}" IS NOT NULL`;
+
+    try {
+      const [topRes, bottomRes, totalRes] = await Promise.all([
+        cm.executeSQL(topSql),
+        cm.executeSQL(bottomSql),
+        cm.executeSQL(totalSql)
+      ]);
+
+      const topRow = topRes?.rows?.[0] || null;
+      const bottomRow = bottomRes?.rows?.[0] || null;
+      const total = Number(totalRes?.rows?.[0]?.total_m);
+
+      if (topRow) {
+        out.topValue = topRow.v;
+        out.topMetric = Number(topRow.m);
+      }
+      if (bottomRow) {
+        out.bottomValue = bottomRow.v;
+        out.bottomMetric = Number(bottomRow.m);
+      }
+      if (Number.isFinite(total) && total !== 0 && Number.isFinite(out.topMetric)) {
+        out.topShare = out.topMetric / total;
+      }
+    } catch (_) {}
+  }
+
+  if (metric && timeCol) {
+    const safeMetric = toSafeIdent(metric);
+    const safeTime = toSafeIdent(timeCol);
+    const trendSql = `
+      WITH p AS (
+        SELECT date_trunc('month', TRY_CAST("${safeTime}" AS DATE)) AS period,
+               SUM("${safeMetric}") AS metric_sum
+        FROM "${safeTable}"
+        WHERE TRY_CAST("${safeTime}" AS DATE) IS NOT NULL AND "${safeMetric}" IS NOT NULL
+        GROUP BY 1
+      )
+      SELECT period, metric_sum
+      FROM p
+      ORDER BY period DESC
+      LIMIT 2`;
+
+    try {
+      const trendRes = await cm.executeSQL(trendSql);
+      const latest = trendRes?.rows?.[0] || null;
+      const prev = trendRes?.rows?.[1] || null;
+
+      if (latest) {
+        out.latestPeriod = latest.period;
+        out.latestValue = Number(latest.metric_sum);
+      }
+      if (prev) {
+        out.prevPeriod = prev.period;
+        out.prevValue = Number(prev.metric_sum);
+      }
+      if (Number.isFinite(out.latestValue) && Number.isFinite(out.prevValue) && out.prevValue !== 0) {
+        out.trendDeltaPct = ((out.latestValue - out.prevValue) / Math.abs(out.prevValue)) * 100;
+      }
+    } catch (_) {}
+  }
+
+  return out;
+}
+
+function sanitizeSuggestionCategories(rawCategories, cap) {
+  if (!Array.isArray(rawCategories)) return null;
+  const out = [];
+  for (const item of rawCategories) {
+    if (!item || typeof item !== 'object') continue;
+    const label = String(item.label || '').trim();
+    const promptsRaw = Array.isArray(item.prompts) ? item.prompts : [];
+    const prompts = [];
+    for (const p of promptsRaw) {
+      const s = String(p || '').replace(/\s+/g, ' ').trim();
+      if (!s) continue;
+      if (/\b(select|from|join|where|schema|column|table name|sql)\b/i.test(s)) continue;
+      const q = s.endsWith('?') ? s : (s + '?');
+      prompts.push(q);
+      if (prompts.length >= cap) break;
+    }
+    if (!label || !prompts.length) continue;
+    out.push({ label, prompts });
+    if (out.length >= 4) break;
+  }
+  return out.length ? out : null;
+}
+
+async function buildAIKPIQuestionCategories(tableInsights, deterministicCategories, cap) {
+  const insightDigest = (tableInsights || []).slice(0, 4).map(t => {
+    const bits = [];
+    bits.push(`Table: ${t.table}`);
+    bits.push(`Rows: ${t.rowCount}`);
+    if (t.metric) bits.push(`Primary KPI: ${t.metric}`);
+    if (t.dimension) bits.push(`Primary Segment: ${t.dimension}`);
+    if (t.timeCol) bits.push(`Time Axis: ${t.timeCol}`);
+    if (t.signals?.topValue != null && Number.isFinite(t.signals?.topMetric)) {
+      bits.push(`Top segment: ${t.signals.topValue} (${formatNumber(t.signals.topMetric)})`);
+    }
+    if (t.signals?.bottomValue != null && Number.isFinite(t.signals?.bottomMetric)) {
+      bits.push(`Bottom segment: ${t.signals.bottomValue} (${formatNumber(t.signals.bottomMetric)})`);
+    }
+    if (Number.isFinite(t.signals?.topShare)) {
+      bits.push(`Top-share concentration: ${(t.signals.topShare * 100).toFixed(1)}%`);
+    }
+    if (Number.isFinite(t.signals?.trendDeltaPct)) {
+      bits.push(`Latest vs previous period delta: ${t.signals.trendDeltaPct >= 0 ? '+' : ''}${t.signals.trendDeltaPct.toFixed(1)}%`);
+    }
+    return '- ' + bits.join(' | ');
+  }).join('\n');
+
+  if (!insightDigest) return null;
+
+  const system = [
+    'You are a senior business analytics strategist.',
+    'Design highly useful KPI and business questions from the data insights provided.',
+    'Questions must help an executive/user extract actionable insights, risks, opportunities, and root causes.',
+    'Avoid technical/schema language like table, column, SQL, join, schema, field names.',
+    'Use business phrasing and KPI language.',
+    'Return ONLY valid JSON with this exact shape:',
+    '{"categories":[{"label":"Insight Starters","prompts":["..."]},{"label":"Drivers & Root Cause","prompts":["..."]},{"label":"Risk & Outliers","prompts":["..."]},{"label":"Trends & Forecasts","prompts":["..."]}]}'
+  ].join(' ');
+
+  const user = [
+    `Dataset insight digest:\n${insightDigest}`,
+    `Candidate questions (fallback): ${JSON.stringify(deterministicCategories || [], null, 2)}`,
+    `Requirements: 4 categories, each up to ${cap} prompts, concise and actionable.`
+  ].join('\n\n');
+
+  const out = await requestViaProviderManager({
+    max_tokens: 900,
+    temperature: 0.2,
+    top_p: 0.9,
+    seed: 42,
+    preferComplex: false,
+    openaiModels: MODEL_CANDIDATES,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user }
+    ]
+  });
+
+  if (!out.ok) return null;
+  const parsed = extractJson(out.text || '');
+  const categories = sanitizeSuggestionCategories(parsed?.categories, cap);
+  if (!categories) return null;
+  return { categories, provider: out.provider, model: out.model };
+}
+
+// POST /api/dataset-question-suggestions — dynamic Ask Questions chips based on loaded tables
+app.post('/api/dataset-question-suggestions', async (req, res) => {
+  try {
+    if (!cm) return res.json({ categories: defaultDatasetSuggestions(), source: 'fallback-no-engine' });
+
+    const { activeTables, maxPerCategory } = req.body || {};
+    const tableMap = await cm.listTables();
+    const allNames = Object.keys(tableMap || {});
+    const scopedNames = Array.isArray(activeTables) && activeTables.length
+      ? activeTables.filter(t => allNames.includes(t))
+      : allNames;
+
+    if (!scopedNames.length) {
+      return res.json({
+        categories: [{ label: 'Getting Started', prompts: ['Load data first, then ask business questions here.'] }],
+        source: 'empty'
+      });
+    }
+
+    const cap = Math.max(2, Math.min(Number(maxPerCategory || 4), 6));
+    const grouped = {
+      'Insight Starters': new Set(),
+      'Drivers & Root Cause': new Set(),
+      'Risk & Outliers': new Set(),
+      'Trends & Forecasts': new Set()
+    };
+    const tableInsights = [];
+
+    for (const tableName of scopedNames.slice(0, 6)) {
+      const meta = tableMap[tableName] || {};
+      const split = splitColumns(meta);
+
+      const metrics = [...split.numeric]
+        .filter(c => !isLikelyIdentifier(c))
+        .sort((a, b) => scoreMetricName(b) - scoreMetricName(a));
+      const dims = [...split.categorical]
+        .filter(c => !isLikelyIdentifier(c))
+        .sort((a, b) => scoreDimensionName(b) - scoreDimensionName(a));
+      const timeCol = split.date[0] || null;
+
+      const metric = metrics[0] || null;
+      const dim = dims[0] || null;
+      const metricLabel = prettyLabel(metric);
+      const dimLabel = prettyLabel(dim);
+      const tableLabel = prettyLabel(tableName);
+      const signals = await collectInsightSignalsForTable(tableName, metric, dim, timeCol);
+      tableInsights.push({
+        table: tableLabel,
+        rowCount: Number(meta?.rowCount || 0),
+        metric: metricLabel || null,
+        dimension: dimLabel || null,
+        timeCol: prettyLabel(timeCol) || null,
+        signals
+      });
+
+      grouped['Insight Starters'].add(`What are the top insights from ${tableLabel} this period?`);
+
+      if (metric) {
+        grouped['Insight Starters'].add(`What is driving ${metricLabel} in ${tableLabel}?`);
+        grouped['Risk & Outliers'].add(`Which records are outliers for ${metricLabel} in ${tableLabel}?`);
+      }
+
+      if (metric && dim) {
+        grouped['Insight Starters'].add(`Which ${dimLabel} contributes most to ${metricLabel} in ${tableLabel}?`);
+        grouped['Drivers & Root Cause'].add(`Why is the top ${dimLabel} leading ${metricLabel} in ${tableLabel}?`);
+        grouped['Drivers & Root Cause'].add(`What separates high and low ${dimLabel} performance for ${metricLabel}?`);
+        grouped['Risk & Outliers'].add(`Which ${dimLabel} is underperforming for ${metricLabel} in ${tableLabel}?`);
+      }
+
+      if (metric && timeCol) {
+        const timeLabel = prettyLabel(timeCol);
+        grouped['Trends & Forecasts'].add(`How is ${metricLabel} trending by ${timeLabel} in ${tableLabel}?`);
+        grouped['Trends & Forecasts'].add(`Forecast next 3 periods for ${metricLabel} in ${tableLabel}.`);
+      }
+
+      if (metric && dim && signals.topValue !== null && signals.topValue !== undefined) {
+        const topVal = shortText(signals.topValue);
+        grouped['Drivers & Root Cause'].add(`How can we replicate ${metricLabel} performance of ${dimLabel} ${topVal}?`);
+      }
+
+      if (metric && dim && signals.bottomValue !== null && signals.bottomValue !== undefined) {
+        const bottomVal = shortText(signals.bottomValue);
+        grouped['Risk & Outliers'].add(`Why is ${dimLabel} ${bottomVal} lagging in ${metricLabel}?`);
+      }
+
+      if (metric && Number.isFinite(signals.topShare)) {
+        const sharePct = (signals.topShare * 100).toFixed(1);
+        grouped['Risk & Outliers'].add(`Is ${metricLabel} overly concentrated in a few segments (top share around ${sharePct}%)?`);
+      }
+
+      if (metric && timeCol && Number.isFinite(signals.trendDeltaPct)) {
+        const dir = signals.trendDeltaPct >= 0 ? 'increased' : 'decreased';
+        const pct = Math.abs(signals.trendDeltaPct).toFixed(1);
+        grouped['Insight Starters'].add(`Why ${dir} ${metricLabel} by ${pct}% in the latest period?`);
+        grouped['Trends & Forecasts'].add(`What caused the ${pct}% ${dir} in ${metricLabel}, and will it continue?`);
+      }
+
+      if (metric && dim && signals.topValue !== null && Number.isFinite(signals.topMetric)) {
+        grouped['Insight Starters'].add(`What explains ${dimLabel} ${shortText(signals.topValue)} delivering about ${formatNumber(signals.topMetric)} ${metricLabel}?`);
+      }
+
+      if (metric && dim) {
+        grouped['Drivers & Root Cause'].add(`Which levers can improve low-performing ${dimLabel} for ${metricLabel}?`);
+      }
+
+      if (metric && dim && signals.topValue !== null) {
+        grouped['Drivers & Root Cause'].add(`Compare ${metricLabel} drivers for ${dimLabel} ${shortText(signals.topValue)} versus all others.`);
+      }
+    }
+
+    const categories = Object.entries(grouped)
+      .map(([label, set]) => ({ label, prompts: [...set].slice(0, cap) }))
+      .filter(c => c.prompts.length);
+
+    if (!categories.length) {
+      return res.json({ categories: defaultDatasetSuggestions(), source: 'fallback-empty-generated' });
+    }
+
+    const aiDesigned = await buildAIKPIQuestionCategories(tableInsights, categories, cap);
+    if (aiDesigned?.categories?.length) {
+      return res.json({
+        categories: aiDesigned.categories,
+        source: 'ai-kpi-business',
+        provider: aiDesigned.provider,
+        model: aiDesigned.model
+      });
+    }
+
+    return res.json({ categories, source: 'insight-data-driven' });
+  } catch (e) {
+    res.json({ categories: defaultDatasetSuggestions(), source: 'fallback-error', error: e.message });
+  }
+});
+
 // ════════════════════════════════════════════════════════════════════════════════
 // SMART CHARTS — CHANGE 3
 // ════════════════════════════════════════════════════════════════════════════════

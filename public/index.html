@@ -161,47 +161,15 @@
       <button class="ctx-all-btn" onclick="selectAllTables()">All Tables</button>
     </div>
 
-    <div id="workflowRuntime" class="card" style="padding:10px 14px;margin-bottom:10px;font-size:12px;color:var(--t2)">
-      Workflow status: Ready for Step 6 (User question).
-    </div>
+    <div id="qaGuardMessage" class="card" style="display:none;padding:12px 14px;margin-bottom:10px;font-size:13px;color:var(--t2)"></div>
 
     <!-- Question chips -->
-    <div class="card chip-card">
-      <div class="chip-bar">
+    <div id="qaQuestionCard" class="card chip-card">
+      <div id="dynamicQuestionChips" class="chip-bar">
         <div class="chip-category">
-          <div class="chip-category-label">Totals &amp; Averages</div>
+          <div class="chip-category-label">Suggested Questions</div>
           <div class="chip-row">
-            <button class="chip" onclick="useChip(this)">What is the total for the first numeric column?</button>
-            <button class="chip" onclick="useChip(this)">What is the average value per group?</button>
-            <button class="chip" onclick="useChip(this)">How many records are in the dataset?</button>
-            <button class="chip" onclick="useChip(this)">What is the maximum value in the data?</button>
-          </div>
-        </div>
-        <div class="chip-category">
-          <div class="chip-category-label">Rankings &amp; Comparisons</div>
-          <div class="chip-row">
-            <button class="chip" onclick="useChip(this)">Which group has the highest average?</button>
-            <button class="chip" onclick="useChip(this)">Rank all groups from best to worst</button>
-            <button class="chip" onclick="useChip(this)">Which group is the most consistent?</button>
-            <button class="chip" onclick="useChip(this)">Compare the top two groups</button>
-          </div>
-        </div>
-        <div class="chip-category">
-          <div class="chip-category-label">Outliers &amp; Filters</div>
-          <div class="chip-row">
-            <button class="chip" onclick="useChip(this)">Which rows had unusually high values?</button>
-            <button class="chip" onclick="useChip(this)">Show records where the value is above average</button>
-            <button class="chip" onclick="useChip(this)">What percentage of records exceeded the median?</button>
-            <button class="chip" onclick="useChip(this)">Find any anomalies or spikes in the data</button>
-          </div>
-        </div>
-        <div class="chip-category">
-          <div class="chip-category-label">Trends &amp; Forecasts</div>
-          <div class="chip-row">
-            <button class="chip" onclick="useChip(this)">Is the trend improving or declining over time?</button>
-            <button class="chip" onclick="useChip(this)">Forecast the next 3 periods</button>
-            <button class="chip" onclick="useChip(this)">Show a bar chart of totals by group</button>
-            <button class="chip" onclick="useChip(this)">Which period had the highest average?</button>
+            <span style="font-size:12px;color:var(--t2)">Loading dataset-aware suggestions...</span>
           </div>
         </div>
       </div>
@@ -266,7 +234,7 @@
 
 <!-- ── Scripts ── -->
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
-<script src="voice-manager.js"></script>
-<script src="script.js"></script>
+<script src="voice-manager.js?v=20260709b"></script>
+<script src="script.js?v=20260709b"></script>
 </body>
 </html>

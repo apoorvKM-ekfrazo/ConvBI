@@ -9,6 +9,7 @@ let voiceMgr       = null; // set by voice-manager.js
 let savedInsights  = JSON.parse(localStorage.getItem('convbi_insights') || '[]');
 let conversationTurns = []; // recent Q/A context for intent decoding
 const answerPayloadStore = {}; // cardId -> payload for exports
+let isLoadingDynamicChips = false;
 
 const WORKFLOW_LABELS = {
   6: 'User Asks Business Question',
@@ -32,7 +33,10 @@ function switchTab(name) {
   });
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.getElementById(name)?.classList.add('active');
-  if (name === 'qa') refreshTableContextBar();
+  if (name === 'qa') {
+    refreshTableContextBar();
+    loadDynamicQuestionChips();
+  }
 }
 
 function getInitialTabFromUrl() {
@@ -73,6 +77,119 @@ function setWorkflowRuntime(step, detail) {
   const title = WORKFLOW_LABELS[step] || 'Workflow';
   const suffix = detail ? ` ${escapeHtml(detail)}` : '';
   box.innerHTML = `<strong>Step ${step}: ${escapeHtml(title)}</strong>${suffix}`;
+}
+
+function syncQAAvailability() {
+  const hasData = Object.keys(loadedTables || {}).length > 0;
+  const card = document.getElementById('qaQuestionCard');
+  const guard = document.getElementById('qaGuardMessage');
+  const input = document.getElementById('qaInput');
+  const askBtn = document.getElementById('askBtn');
+  const followupRail = document.getElementById('followupRail');
+
+  if (card) card.style.display = hasData ? '' : 'none';
+  if (guard) {
+    guard.style.display = hasData ? 'none' : '';
+    if (!hasData) {
+      guard.innerHTML = '<strong>No dataset loaded.</strong> Please upload files and click <strong>Load files into analytics</strong> before asking KPI/business questions.';
+    }
+  }
+  if (input) {
+    input.disabled = !hasData;
+    if (!hasData) input.value = '';
+  }
+  if (askBtn) askBtn.disabled = !hasData;
+  if (!hasData && followupRail) followupRail.style.display = 'none';
+
+  return hasData;
+}
+
+function getDynamicChipFallback() {
+  return [
+    {
+      label: 'KPI Insight Starters',
+      prompts: [
+        'Which KPI is currently underperforming the most?',
+        'Which segment contributes most to business performance?',
+        'What changed most in KPI performance versus previous period?'
+      ]
+    },
+    {
+      label: 'Business Decisions',
+      prompts: [
+        'What are the top 3 actions to improve this KPI?',
+        'Which business area has the highest risk right now?',
+        'What is the likely root cause behind the latest KPI drop?'
+      ]
+    }
+  ];
+}
+
+function renderDynamicQuestionChips(categories) {
+  const host = document.getElementById('dynamicQuestionChips');
+  if (!host) return;
+
+  const safeCategories = Array.isArray(categories) ? categories : [];
+  if (!safeCategories.length) {
+    host.innerHTML = '<div class="chip-category"><div class="chip-category-label">Suggested Questions</div><div class="chip-row"><span style="font-size:12px;color:var(--t2)">No suggestions available yet.</span></div></div>';
+    return;
+  }
+
+  host.innerHTML = safeCategories.map(cat => {
+    const label = escapeHtml(cat.label || 'Suggested Questions');
+    const prompts = Array.isArray(cat.prompts) ? cat.prompts : [];
+    const chips = prompts.map(p => `<button class="chip" data-chip-text="${escapeHtml(String(p))}">${escapeHtml(String(p))}</button>`).join('');
+    return `<div class="chip-category"><div class="chip-category-label">${label}</div><div class="chip-row">${chips}</div></div>`;
+  }).join('');
+
+  host.querySelectorAll('.chip[data-chip-text]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const text = btn.getAttribute('data-chip-text') || '';
+      const input = document.getElementById('qaInput');
+      if (!input) return;
+      input.value = text;
+      input.focus();
+    });
+  });
+}
+
+async function loadDynamicQuestionChips() {
+  const host = document.getElementById('dynamicQuestionChips');
+  if (!host || isLoadingDynamicChips) return;
+  isLoadingDynamicChips = true;
+
+  try {
+    const tableNames = Object.keys(loadedTables || {});
+    const hasData = syncQAAvailability();
+    if (!hasData || !tableNames.length) {
+      return;
+    }
+
+    host.innerHTML = '<div class="chip-category"><div class="chip-category-label">Suggested Questions</div><div class="chip-row"><span style="font-size:12px;color:var(--t2)">Generating suggestions from your dataset...</span></div></div>';
+
+    const activeTables = activeTableSet.size ? [...activeTableSet] : tableNames;
+    const res = await fetch(`${API}/api/dataset-question-suggestions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activeTables, maxPerCategory: 4 })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load question suggestions.');
+
+    const categories = Array.isArray(data.categories) ? data.categories : [];
+    renderDynamicQuestionChips(categories.length ? categories : getDynamicChipFallback());
+  } catch (_) {
+    renderDynamicQuestionChips([
+      {
+        label: 'Suggestions Unavailable',
+        prompts: [
+          'Could not generate KPI questions right now. Please refresh the page or restart the backend service.'
+        ]
+      }
+    ]);
+  } finally {
+    isLoadingDynamicChips = false;
+  }
 }
 
 function buildFollowupSuggestionsFallback(question, decoded, sections) {
@@ -179,6 +296,8 @@ function onDrop(e)      { e.preventDefault(); document.getElementById('dropZone'
 function handleFileInputChange(files) {
   if (!files || !files.length) return;
   pendingFiles = Array.from(files);
+  const loadBtn = document.getElementById('loadBtn');
+  if (loadBtn) loadBtn.disabled = false;
   const names = pendingFiles.map(f => f.name).join(', ');
   // Show preview for last file
   const last = pendingFiles[pendingFiles.length - 1];
@@ -222,7 +341,10 @@ function splitCSVLine(line, delim = ',') {
 }
 
 async function uploadStagedFiles() {
-  if (!pendingFiles.length) return;
+  if (!pendingFiles.length) {
+    showError('Select at least one file before uploading.');
+    return;
+  }
   const btn = document.getElementById('loadBtn');
   btn.disabled = true; btn.textContent = 'Uploading…';
 
@@ -246,7 +368,8 @@ async function uploadStagedFiles() {
   } catch (e) {
     showError('Upload error: ' + e.message);
   } finally {
-    btn.disabled = false; btn.textContent = 'Upload files';
+    btn.disabled = pendingFiles.length === 0;
+    btn.textContent = pendingFiles.length ? ('Upload ' + pendingFiles.length + ' file(s)') : 'Load files into analytics';
   }
 }
 
@@ -260,6 +383,7 @@ async function refreshTableLibrary() {
     const data = await res.json();
     loadedTables = data.tables || {};
     renderTableLibrary();
+    syncQAAvailability();
     refreshTableContextBar();
     // Broadcast to dashboard page
     localStorage.setItem('convbi_tables_updated', Date.now().toString());
@@ -298,14 +422,19 @@ function refreshTableContextBar() {
   const bar   = document.getElementById('tableContextBar');
   const chips = document.getElementById('tableContextChips');
   if (!bar || !chips) return;
+  syncQAAvailability();
   const names = Object.keys(loadedTables);
-  if (!names.length) { bar.style.display = 'none'; return; }
+  if (!names.length) {
+    bar.style.display = 'none';
+    return;
+  }
   bar.style.display = '';
   // Default: all active
   if (!activeTableSet.size) names.forEach(n => activeTableSet.add(n));
   chips.innerHTML = names.map(n =>
     `<button class="ctx-chip ${activeTableSet.has(n)?'ctx-chip-on':''}" onclick="toggleTableCtx('${escapeHtml(n)}')">${escapeHtml(n)}</button>`
   ).join('');
+  loadDynamicQuestionChips();
 }
 function toggleTableCtx(name) {
   activeTableSet.has(name) ? activeTableSet.delete(name) : activeTableSet.add(name);
@@ -939,8 +1068,10 @@ function downloadTextFile(fileName, text) {
 
 // ── Chip / history ────────────────────────────────────────────────────────────
 function useChip(btn) {
-  document.getElementById('qaInput').value = btn.textContent.trim();
-  document.getElementById('qaInput').focus();
+  const input = document.getElementById('qaInput');
+  if (!input || !btn) return;
+  input.value = btn.textContent.trim();
+  input.focus();
 }
 
 let queryHistory = [];
@@ -1303,9 +1434,13 @@ function updateVoiceSpeed(v)  {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 (async () => {
+  const loadBtn = document.getElementById('loadBtn');
+  if (loadBtn) {
+    loadBtn.disabled = true;
+    loadBtn.textContent = 'Load files into analytics';
+  }
   await refreshTableLibrary();
   switchTab(getInitialTabFromUrl());
-  setWorkflowRuntime(6, 'Ready for your business question.');
   // Load query history
   try { queryHistory = JSON.parse(localStorage.getItem('convbi_history')||'[]'); } catch (_) {}
   // Set up voice manager if available
