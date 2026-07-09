@@ -673,6 +673,22 @@ Rules:
 - Do not invent ids.
 - Return ONLY valid JSON.`;
 
+const FILTER_RECOMMENDER_SYSTEM = `You are an expert BI analyst selecting the most useful interactive dashboard filters.
+You will receive filter candidates generated from real table metadata.
+Return JSON only:
+{
+  "top_filters": [
+    { "id": "candidate_id", "why": "short reason" }
+  ]
+}
+Rules:
+- Select at most 6 candidate ids.
+- Prefer filters that are broadly useful: time, high-signal numeric ranges, and practical low-cardinality label dimensions.
+- Avoid weak filters (constant, high-null, too many categories for labels).
+- Keep diversity across filter types (timeline, number, label).
+- Do not invent ids.
+- Return ONLY valid JSON.`;
+
 function isTrendType(type) {
   return ['line', 'area'].includes(String(type || '').toLowerCase());
 }
@@ -1114,17 +1130,285 @@ app.post('/api/interpret-table', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// GET /api/charts/:tableName — full pipeline: profile → interpret → score → ECharts options
-app.get('/api/charts/:tableName', async (req, res) => {
+function isNumericDuckType(type = '') {
+  return /^(INTEGER|INT|BIGINT|DOUBLE|FLOAT|REAL|DECIMAL|NUMERIC|HUGEINT|UBIGINT|TINYINT|SMALLINT|UINTEGER|USMALLINT|UTINYINT|INT4|INT8|INT2|NUMBER|MONEY)/i.test(String(type).trim());
+}
+
+function isDateDuckType(type = '') {
+  return /^(DATE|TIMESTAMP|TIME)/i.test(String(type).trim());
+}
+
+function escapeSqlLiteral(value) {
+  return String(value ?? '').replace(/'/g, "''");
+}
+
+async function getTableColumnsMeta(tableName) {
+  const tables = await cm.listTables();
+  const meta = tables?.[tableName] || {};
+  return Array.isArray(meta.columns) ? meta.columns : [];
+}
+
+function normalizeFilters(raw = {}) {
+  const obj = raw && typeof raw === 'object' ? raw : {};
+  const number = Array.isArray(obj.number) ? obj.number : [];
+  const label = Array.isArray(obj.label) ? obj.label : [];
+  const timeline = Array.isArray(obj.timeline) ? obj.timeline : [];
+  return { number, label, timeline };
+}
+
+function buildFilterWhereSql(filters = {}, columns = []) {
+  const byName = new Map((columns || []).map(c => [String(c?.name || '').trim(), c]));
+  const parts = [];
+
+  for (const f of (filters.number || [])) {
+    const column = String(f?.column || '').trim();
+    if (!column || !byName.has(column)) continue;
+    const col = byName.get(column);
+    if (!isNumericDuckType(col?.type)) continue;
+    const q = dq(column);
+    const min = Number(f?.min);
+    const max = Number(f?.max);
+    if (Number.isFinite(min)) parts.push(`${q} >= ${min}`);
+    if (Number.isFinite(max)) parts.push(`${q} <= ${max}`);
+  }
+
+  for (const f of (filters.label || [])) {
+    const column = String(f?.column || '').trim();
+    if (!column || !byName.has(column)) continue;
+    const values = Array.isArray(f?.values) ? f.values.map(v => String(v)).filter(Boolean).slice(0, 30) : [];
+    if (!values.length) continue;
+    const q = dq(column);
+    const escaped = values.map(v => `'${escapeSqlLiteral(v)}'`);
+    parts.push(`${q} IN (${escaped.join(', ')})`);
+  }
+
+  for (const f of (filters.timeline || [])) {
+    const column = String(f?.column || '').trim();
+    if (!column || !byName.has(column)) continue;
+    const col = byName.get(column);
+    if (!isDateDuckType(col?.type) && !/date|time|month|year|day|week|quarter/i.test(column)) continue;
+    const q = dq(column);
+    const from = String(f?.from || '').trim();
+    const to = String(f?.to || '').trim();
+    if (from) parts.push(`${q} >= '${escapeSqlLiteral(from)}'`);
+    if (to) parts.push(`${q} <= '${escapeSqlLiteral(to)}'`);
+  }
+
+  return parts.join(' AND ');
+}
+
+function deterministicFilterRecommendations(candidates = [], limit = 6) {
+  const typeBase = { timeline: 120, number: 80, label: 70 };
+  return [...candidates]
+    .map(c => {
+      const score =
+        Number(typeBase[c.type] || 0) +
+        Math.max(0, Number(c.qualityScore || 0)) +
+        Math.max(0, 30 - Number(c.nullPct || 0) * 100);
+      return { ...c, _score: score };
+    })
+    .sort((a, b) => b._score - a._score)
+    .slice(0, limit)
+    .map(({ _score, ...rest }) => rest);
+}
+
+// GET /api/filter-meta/:tableName — dynamic filter candidates + AI-ranked recommendations
+app.get('/api/filter-meta/:tableName', async (req, res) => {
+  if (!cm) return res.status(503).json({ error: 'DuckDB engine not available.' });
+
+  const tableName = String(req.params?.tableName || '').trim();
+  if (!tableName) return res.status(400).json({ error: 'Missing tableName.' });
+
+  try {
+    const columns = await getTableColumnsMeta(tableName);
+    if (!columns.length) return res.json({ tableName, candidates: [], filters: [], mode: 'empty' });
+
+    const qt = dq(tableName);
+    const rowSql = `SELECT COUNT(*) AS n FROM ${qt}`;
+    const rowRes = await cm.executeSQL(rowSql);
+    const rowCount = Number(rowRes?.rows?.[0]?.n || 0);
+    if (!rowCount) return res.json({ tableName, candidates: [], filters: [], mode: 'empty' });
+
+    const candidates = [];
+
+    for (const col of columns.slice(0, 32)) {
+      const colName = String(col?.name || '').trim();
+      const colType = String(col?.type || '');
+      if (!colName) continue;
+      const qc = dq(colName);
+
+      if (isNumericDuckType(colType)) {
+        try {
+          const statsSql =
+            `SELECT MIN(${qc}) AS mn, MAX(${qc}) AS mx, STDDEV_POP(${qc}) AS sd,
+                    (COUNT(*) - COUNT(${qc})) AS nulls
+             FROM ${qt}`;
+          const stats = await cm.executeSQL(statsSql);
+          const row = stats?.rows?.[0] || {};
+          const mn = Number(row.mn);
+          const mx = Number(row.mx);
+          const sd = Number(row.sd || 0);
+          const nullPct = rowCount ? Number(row.nulls || 0) / rowCount : 0;
+          if (Number.isFinite(mn) && Number.isFinite(mx) && mx > mn) {
+            candidates.push({
+              id: `number:${colName}`,
+              type: 'number',
+              column: colName,
+              label: colName,
+              min: mn,
+              max: mx,
+              nullPct,
+              qualityScore: Math.min(100, Math.log10(Math.abs(mx - mn) + 1) * 20 + Math.min(Math.abs(sd), 20))
+            });
+          }
+        } catch (_) {}
+      }
+
+      if (isDateDuckType(colType) || /date|time|month|year|day|week|quarter/i.test(colName)) {
+        try {
+          const statsSql =
+            `SELECT MIN(${qc}) AS mn, MAX(${qc}) AS mx,
+                    COUNT(DISTINCT ${qc}) AS nd,
+                    (COUNT(*) - COUNT(${qc})) AS nulls
+             FROM ${qt}`;
+          const stats = await cm.executeSQL(statsSql);
+          const row = stats?.rows?.[0] || {};
+          const minDate = row.mn ? String(row.mn) : '';
+          const maxDate = row.mx ? String(row.mx) : '';
+          const distinctCount = Number(row.nd || 0);
+          const nullPct = rowCount ? Number(row.nulls || 0) / rowCount : 0;
+          if (minDate && maxDate) {
+            candidates.push({
+              id: `timeline:${colName}`,
+              type: 'timeline',
+              column: colName,
+              label: colName,
+              minDate,
+              maxDate,
+              distinctCount,
+              nullPct,
+              qualityScore: Math.min(100, 30 + Math.log10(distinctCount + 1) * 20)
+            });
+          }
+        } catch (_) {}
+      }
+
+      if (!isNumericDuckType(colType)) {
+        try {
+          const statsSql =
+            `SELECT COUNT(DISTINCT ${qc}) AS nd,
+                    (COUNT(*) - COUNT(${qc})) AS nulls
+             FROM ${qt}`;
+          const stats = await cm.executeSQL(statsSql);
+          const row = stats?.rows?.[0] || {};
+          const distinctCount = Number(row.nd || 0);
+          const nullPct = rowCount ? Number(row.nulls || 0) / rowCount : 0;
+          if (distinctCount >= 2 && distinctCount <= 120) {
+            const topSql =
+              `SELECT CAST(${qc} AS VARCHAR) AS v, COUNT(*) AS f
+               FROM ${qt}
+               WHERE ${qc} IS NOT NULL
+               GROUP BY ${qc}
+               ORDER BY f DESC
+               LIMIT 25`;
+            const top = await cm.executeSQL(topSql);
+            const options = (top?.rows || []).map(r => ({ value: String(r.v ?? ''), freq: Number(r.f || 0) })).filter(v => v.value);
+            if (options.length >= 2) {
+              candidates.push({
+                id: `label:${colName}`,
+                type: 'label',
+                column: colName,
+                label: colName,
+                distinctCount,
+                nullPct,
+                options,
+                qualityScore: Math.max(0, 100 - Math.abs(20 - distinctCount) * 3)
+              });
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
+    if (!candidates.length) return res.json({ tableName, candidates: [], filters: [], mode: 'empty' });
+
+    const fallback = deterministicFilterRecommendations(candidates, 6);
+    const compact = candidates.map(c => ({
+      id: c.id,
+      type: c.type,
+      column: c.column,
+      label: c.label,
+      nullPct: Number(c.nullPct || 0),
+      distinctCount: Number(c.distinctCount || 0),
+      min: c.min,
+      max: c.max,
+      minDate: c.minDate,
+      maxDate: c.maxDate,
+      optionCount: Array.isArray(c.options) ? c.options.length : 0,
+      qualityScore: Number(c.qualityScore || 0)
+    }));
+
+    const aiOut = await requestViaProviderManager({
+      messages: [
+        { role: 'system', content: FILTER_RECOMMENDER_SYSTEM },
+        { role: 'user', content: JSON.stringify({ tableName, rowCount, limit: 6, candidates: compact }, null, 2) }
+      ],
+      max_tokens: 500,
+      temperature: 0,
+      top_p: 1,
+      seed: 42
+    });
+
+    if (!aiOut.ok) {
+      return res.json({ tableName, rowCount, candidates, filters: fallback, mode: 'fallback', attempted: aiOut.attempted || [] });
+    }
+
+    const parsed = extractJson(aiOut.text) || {};
+    const top = Array.isArray(parsed?.top_filters) ? parsed.top_filters : [];
+    const byId = new Map(candidates.map(c => [c.id, c]));
+    const selected = [];
+    const seen = new Set();
+
+    for (const item of top) {
+      const id = String(item?.id || '').trim();
+      const found = byId.get(id);
+      if (!found || seen.has(id)) continue;
+      seen.add(id);
+      selected.push({ ...found, why: String(item?.why || '').trim() || 'Selected by AI relevance ranking.' });
+      if (selected.length >= 6) break;
+    }
+
+    if (selected.length < 6) {
+      for (const f of fallback) {
+        if (seen.has(f.id)) continue;
+        seen.add(f.id);
+        selected.push(f);
+        if (selected.length >= 6) break;
+      }
+    }
+
+    return res.json({ tableName, rowCount, candidates, filters: selected, mode: 'ai', provider: aiOut.provider, model: aiOut.model });
+  } catch (e) {
+    console.error('[/api/filter-meta] error:', e.message);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+async function handleChartsRequest(req, res) {
   if (!cm)             return res.status(503).json({ error: 'DuckDB engine not available.' });
   if (!dataProfiler)   return res.status(503).json({ error: 'data-profiler not loaded.' });
   if (!chartSelector)  return res.status(503).json({ error: 'chart-selector not loaded.' });
 
   const { tableName } = req.params;
   try {
-    // 1. Profile
-    const profile = await dataProfiler.profileTable(tableName, sql => cm.executeSQL(sql));
-    if (!profile.rowCount) return res.json({ charts: [], profile });
+    const columns = await getTableColumnsMeta(tableName);
+    const rawFilters = req.method === 'GET' ? req.query?.filters : req.body?.filters;
+    const filters = normalizeFilters(rawFilters);
+    const whereSql = buildFilterWhereSql(filters, columns);
+
+    // 1. Profile (filtered when filters are present)
+    const profile = await dataProfiler.profileTable(tableName, sql => cm.executeSQL(sql), { whereSql });
+    if (!profile.rowCount) return res.json({ charts: [], profile, interpretation: null, appliedFilters: filters });
 
     // 2. Interpret (LLM)
     let interpretation = null;
@@ -1156,14 +1440,18 @@ app.get('/api/charts/:tableName', async (req, res) => {
     } catch (_) {}
 
     // 3. Score and select charts
-    const charts = await chartSelector.selectCharts(tableName, profile, interpretation, sql => cm.executeSQL(sql));
+    const charts = await chartSelector.selectCharts(tableName, profile, interpretation, sql => cm.executeSQL(sql), 4, { whereSql });
 
-    res.json({ charts, profile, interpretation });
+    res.json({ charts, profile, interpretation, appliedFilters: filters });
   } catch (e) {
     console.error('[/api/charts] error:', e.message);
     res.status(500).json({ error: e.message });
   }
-});
+}
+
+// /api/charts/:tableName — full pipeline: profile → interpret → score → ECharts options
+app.get('/api/charts/:tableName', handleChartsRequest);
+app.post('/api/charts/:tableName', handleChartsRequest);
 
 function dq(name) {
   return `"${String(name || '').replace(/"/g, '""')}"`;

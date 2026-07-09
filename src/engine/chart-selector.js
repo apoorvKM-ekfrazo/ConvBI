@@ -15,7 +15,14 @@ const DARK_TIP = { trigger:'axis', backgroundColor:'#FFFFFF', borderColor:'#E5E7
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-async function selectCharts(tableName, profile, interpretation, executeSQL, maxCharts = 4) {
+function mergeWhere(baseWhere = '', extraWhere = '') {
+  const b = String(baseWhere || '').trim();
+  const e = String(extraWhere || '').trim();
+  if (b && e) return `(${b}) AND (${e})`;
+  return b || e || '';
+}
+
+async function selectCharts(tableName, profile, interpretation, executeSQL, maxCharts = 4, options = {}) {
   const { columns, rowCount } = profile;
   if (!rowCount || rowCount < 2) return [];
 
@@ -65,7 +72,7 @@ async function selectCharts(tableName, profile, interpretation, executeSQL, maxC
   if (!candidates.length) return [];
 
   const scored = await Promise.all(
-    candidates.map(c => _scoreCandidate(c, tableName, columns, rowCount, primaryM, executeSQL))
+    candidates.map(c => _scoreCandidate(c, tableName, columns, rowCount, primaryM, executeSQL, options))
   );
 
   return scored
@@ -76,10 +83,11 @@ async function selectCharts(tableName, profile, interpretation, executeSQL, maxC
 
 // ── Scoring ───────────────────────────────────────────────────────────────────
 
-async function _scoreCandidate(candidate, tableName, columns, rowCount, primaryM, executeSQL) {
+async function _scoreCandidate(candidate, tableName, columns, rowCount, primaryM, executeSQL, options = {}) {
   const { xCol, yCol, type } = candidate;
   const xP = columns.find(c => c.name === xCol);
   const yP = columns.find(c => c.name === yCol);
+  const filteredWhere = String(options.whereSql || '').trim();
 
   // Hard rejects
   if (!xP || !yP)                                               return { ...candidate, score: 0, option: null };
@@ -103,10 +111,11 @@ async function _scoreCandidate(candidate, tableName, columns, rowCount, primaryM
 
   try {
     if (type === 'bar' || type === 'donut') {
+      const whereSql = mergeWhere(filteredWhere, `"${xCol}" IS NOT NULL AND "${yCol}" IS NOT NULL`);
       const sql =
         `SELECT "${xCol}" AS grp, AVG("${yCol}") AS avg_val
          FROM "${tableName}"
-         WHERE "${xCol}" IS NOT NULL AND "${yCol}" IS NOT NULL
+         WHERE ${whereSql}
          GROUP BY "${xCol}" ORDER BY avg_val DESC`;
       const r = await executeSQL(sql);
       const rows   = r.rows || [];
@@ -135,10 +144,11 @@ async function _scoreCandidate(candidate, tableName, columns, rowCount, primaryM
         : _barOption(labels, vals, candidate);
 
     } else if (type === 'line') {
+      const whereSql = mergeWhere(filteredWhere, `"${xCol}" IS NOT NULL AND "${yCol}" IS NOT NULL`);
       const sql =
         `SELECT CAST("${xCol}" AS VARCHAR) AS period, AVG("${yCol}") AS avg_val
          FROM "${tableName}"
-         WHERE "${xCol}" IS NOT NULL AND "${yCol}" IS NOT NULL
+         WHERE ${whereSql}
          GROUP BY "${xCol}" ORDER BY "${xCol}"`;
       const r = await executeSQL(sql);
       const rows   = r.rows || [];
@@ -163,9 +173,10 @@ async function _scoreCandidate(candidate, tableName, columns, rowCount, primaryM
       option = _lineOption(labels, vals, candidate);
 
     } else if (type === 'scatter') {
+      const whereSql = mergeWhere(filteredWhere, `"${xCol}" IS NOT NULL AND "${yCol}" IS NOT NULL`);
       const sql =
         `SELECT "${xCol}" AS x, "${yCol}" AS y FROM "${tableName}"
-         WHERE "${xCol}" IS NOT NULL AND "${yCol}" IS NOT NULL LIMIT 500`;
+         WHERE ${whereSql} LIMIT 500`;
       const r = await executeSQL(sql);
       const pts = (r.rows || [])
         .map(row => [Number(row.x), Number(row.y)])

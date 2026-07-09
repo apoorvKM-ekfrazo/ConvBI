@@ -61,6 +61,21 @@
       </div>
     </header>
 
+    <section class="db-filters-shell" id="dbFiltersShell">
+      <div class="db-filters-head">
+        <div class="db-filters-title">Dynamic Filters</div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <select id="dbFilterTableSel" class="db-filter-select" style="min-width:180px;"></select>
+          <div class="db-filters-meta" id="dbFiltersMeta">No filters yet</div>
+        </div>
+      </div>
+      <div class="db-filters-body" id="dbFiltersBody"></div>
+      <div class="db-filters-actions">
+        <button class="db-filter-btn" id="dbApplyFiltersBtn" type="button">Apply Filters</button>
+        <button class="db-filter-btn db-filter-btn-ghost" id="dbResetFiltersBtn" type="button">Reset</button>
+      </div>
+    </section>
+
     <!-- ── OVERVIEW SECTION ── -->
     <section id="section-overview" class="db-section active">
 

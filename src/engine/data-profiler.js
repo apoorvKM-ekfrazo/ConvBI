@@ -4,10 +4,16 @@
  * Called by /api/charts/:tableName to understand data before chart selection.
  */
 
-async function profileTable(tableName, executeSQL) {
-  const safeT = `"${tableName}"`;
+function whereFragment(whereSql = '') {
+  const w = String(whereSql || '').trim();
+  return w ? ` WHERE ${w}` : '';
+}
 
-  const countRes = await executeSQL(`SELECT COUNT(*) AS n FROM ${safeT}`);
+async function profileTable(tableName, executeSQL, options = {}) {
+  const safeT = `"${tableName}"`;
+  const whereSql = whereFragment(options.whereSql);
+
+  const countRes = await executeSQL(`SELECT COUNT(*) AS n FROM ${safeT}${whereSql}`);
   const rowCount = Number(countRes.rows?.[0]?.n || 0);
   if (!rowCount) return { tableName, rowCount: 0, columns: [] };
 
@@ -16,17 +22,18 @@ async function profileTable(tableName, executeSQL) {
 
   // Profile up to 15 columns in parallel
   const profiles = await Promise.all(
-    rawCols.slice(0, 15).map(col => _profileColumn(col, tableName, rowCount, executeSQL))
+    rawCols.slice(0, 15).map(col => _profileColumn(col, tableName, rowCount, executeSQL, options))
   );
 
   return { tableName, rowCount, columns: profiles };
 }
 
-async function _profileColumn(colDef, tableName, rowCount, executeSQL) {
+async function _profileColumn(colDef, tableName, rowCount, executeSQL, options = {}) {
   const name   = colDef.column_name || colDef.name || '';
   const type   = colDef.column_type || colDef.type || 'VARCHAR';
   const safeC  = `"${name}"`;
   const safeT  = `"${tableName}"`;
+  const whereSql = whereFragment(options.whereSql);
 
   const isNumericType = /^(INTEGER|INT|BIGINT|DOUBLE|FLOAT|REAL|DECIMAL|NUMERIC|HUGEINT|UBIGINT|TINYINT|SMALLINT|UINTEGER|USMALLINT|UTINYINT|INT4|INT8|INT2|NUMBER|MONEY)/i.test(type);
   const isDateType    = /^(DATE|TIMESTAMP|TIME)/i.test(type);
@@ -34,7 +41,7 @@ async function _profileColumn(colDef, tableName, rowCount, executeSQL) {
   let nullCount = 0, distinctCount = 1;
   try {
     const r = await executeSQL(
-      `SELECT (COUNT(*) - COUNT(${safeC})) AS nulls, COUNT(DISTINCT ${safeC}) AS dist FROM ${safeT}`
+      `SELECT (COUNT(*) - COUNT(${safeC})) AS nulls, COUNT(DISTINCT ${safeC}) AS dist FROM ${safeT}${whereSql}`
     );
     nullCount     = Number(r.rows?.[0]?.nulls ?? 0);
     distinctCount = Number(r.rows?.[0]?.dist  ?? 1);
@@ -73,7 +80,7 @@ async function _profileColumn(colDef, tableName, rowCount, executeSQL) {
       const r = await executeSQL(
         `SELECT MIN(${safeC}) AS mn, MAX(${safeC}) AS mx,
                 AVG(${safeC}) AS avg, STDDEV_POP(${safeC}) AS sd
-         FROM ${safeT} WHERE ${safeC} IS NOT NULL`
+        FROM ${safeT}${whereSql ? `${whereSql} AND ${safeC} IS NOT NULL` : ` WHERE ${safeC} IS NOT NULL`}`
       );
       const row = r.rows?.[0] || {};
       profile.min    = Number(row.mn);
@@ -90,7 +97,7 @@ async function _profileColumn(colDef, tableName, rowCount, executeSQL) {
     try {
       const r = await executeSQL(
         `SELECT ${safeC} AS val, COUNT(*) AS freq FROM ${safeT}
-         WHERE ${safeC} IS NOT NULL GROUP BY ${safeC} ORDER BY freq DESC LIMIT 5`
+        ${whereSql ? `${whereSql} AND ${safeC} IS NOT NULL` : `WHERE ${safeC} IS NOT NULL`} GROUP BY ${safeC} ORDER BY freq DESC LIMIT 5`
       );
       profile.topValues = (r.rows || []).map(row => ({ value: row.val, freq: Number(row.freq) }));
       const total = profile.topValues.reduce((s, v) => s + v.freq, 0);
@@ -108,7 +115,7 @@ async function _profileColumn(colDef, tableName, rowCount, executeSQL) {
     try {
       const r = await executeSQL(
         `SELECT MIN(${safeC}) AS mn, MAX(${safeC}) AS mx,
-                COUNT(DISTINCT ${safeC}) AS nd FROM ${safeT} WHERE ${safeC} IS NOT NULL`
+                COUNT(DISTINCT ${safeC}) AS nd FROM ${safeT}${whereSql ? `${whereSql} AND ${safeC} IS NOT NULL` : ` WHERE ${safeC} IS NOT NULL`}`
       );
       const row = r.rows?.[0] || {};
       profile.minDate = row.mn;

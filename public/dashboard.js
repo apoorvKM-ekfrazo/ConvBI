@@ -8,6 +8,9 @@ let chartMetaById   = {};    // chartId -> conversion state and source option
 let pendingCharts   = [];    // {id, option, renderOpts} waiting for their section to become visible
 let sidebarOpen     = true;
 let sourceModalState = { chartId: '', activeTab: 'sql' };
+let filterMetaByTable = {};
+let activeFiltersByTable = {};
+let currentFilterTable = '';
 
 const CHART_TYPE_SEQUENCE = ['auto', 'bar', 'hbar', 'line', 'area', 'donut', 'rose', 'scatter'];
 const CHART_PREFS_KEY = 'convbi_chart_type_prefs_v1';
@@ -83,6 +86,203 @@ function showSection(name) {
     // Also resize already-initialized charts (handles layout reflows)
     allCharts.forEach(c => { try { c.resize(); } catch (_) {} });
   }, 60);
+}
+
+function bestTableName(names = []) {
+  return [...names].sort((a, b) => Number(loadedTables[b]?.rowCount || 0) - Number(loadedTables[a]?.rowCount || 0))[0] || '';
+}
+
+function getActiveFiltersForTable(tableName) {
+  return activeFiltersByTable[tableName] || { number: [], label: [], timeline: [] };
+}
+
+function buildFiltersPayload(tableName) {
+  return getActiveFiltersForTable(tableName);
+}
+
+async function fetchFilterMetaForTable(tableName) {
+  if (!tableName) return null;
+  if (filterMetaByTable[tableName]) return filterMetaByTable[tableName];
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 3500);
+    const res = await fetch(`${API}/api/filter-meta/${encodeURIComponent(tableName)}`, { signal: ctl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const data = await res.json();
+    filterMetaByTable[tableName] = data;
+    return data;
+  } catch (_) {
+    return null;
+  }
+}
+
+function renderDynamicFiltersUI(tableName) {
+  const body = document.getElementById('dbFiltersBody');
+  const meta = document.getElementById('dbFiltersMeta');
+  if (!body || !meta) return;
+
+  const payload = filterMetaByTable[tableName];
+  const filters = Array.isArray(payload?.filters) ? payload.filters : [];
+  const mode = String(payload?.mode || 'fallback');
+
+  if (!tableName || !filters.length) {
+    meta.textContent = 'No dynamic filters detected for current data';
+    body.innerHTML = '<div class="db-filter-item"><div class="db-filter-label">No recommended filters available</div><div class="db-filter-hint">Load a richer dataset to unlock dynamic filter controls.</div></div>';
+    return;
+  }
+
+  meta.textContent = `${tableName} · ${filters.length} filters · ${mode === 'ai' ? 'AI-ranked' : 'deterministic'}`;
+
+  const active = getActiveFiltersForTable(tableName);
+  const activeNumber = new Map((active.number || []).map(f => [f.column, f]));
+  const activeLabel = new Map((active.label || []).map(f => [f.column, f]));
+  const activeTimeline = new Map((active.timeline || []).map(f => [f.column, f]));
+
+  body.innerHTML = filters.map(f => {
+    const column = String(f?.column || '');
+    const label = String(f?.label || column).replace(/_/g, ' ');
+    const type = String(f?.type || '').toLowerCase();
+
+    if (type === 'number') {
+      const selected = activeNumber.get(column) || {};
+      const min = Number.isFinite(Number(f.min)) ? Number(f.min) : 0;
+      const max = Number.isFinite(Number(f.max)) ? Number(f.max) : 0;
+      return `
+        <div class="db-filter-item" data-filter-type="number" data-column="${escapeHtml(column)}">
+          <div class="db-filter-label">${escapeHtml(label)} (range)</div>
+          <div class="db-filter-row">
+            <input class="db-filter-input" type="number" step="any" placeholder="min" data-part="min" value="${selected.min ?? ''}" min="${min}" max="${max}">
+            <input class="db-filter-input" type="number" step="any" placeholder="max" data-part="max" value="${selected.max ?? ''}" min="${min}" max="${max}">
+          </div>
+          <div class="db-filter-hint">Detected range: ${min.toFixed(2)} to ${max.toFixed(2)}</div>
+        </div>`;
+    }
+
+    if (type === 'timeline') {
+      const selected = activeTimeline.get(column) || {};
+      const minDate = String(f.minDate || '').slice(0, 10);
+      const maxDate = String(f.maxDate || '').slice(0, 10);
+      return `
+        <div class="db-filter-item" data-filter-type="timeline" data-column="${escapeHtml(column)}">
+          <div class="db-filter-label">${escapeHtml(label)} (timeline)</div>
+          <div class="db-filter-row">
+            <input class="db-filter-input" type="date" data-part="from" value="${escapeHtml(selected.from || '')}" min="${escapeHtml(minDate)}" max="${escapeHtml(maxDate)}">
+            <input class="db-filter-input" type="date" data-part="to" value="${escapeHtml(selected.to || '')}" min="${escapeHtml(minDate)}" max="${escapeHtml(maxDate)}">
+          </div>
+          <div class="db-filter-hint">Range: ${escapeHtml(minDate || 'n/a')} to ${escapeHtml(maxDate || 'n/a')}</div>
+        </div>`;
+    }
+
+    if (type === 'label') {
+      const selected = new Set((activeLabel.get(column)?.values || []).map(v => String(v)));
+      const options = Array.isArray(f.options) ? f.options : [];
+      const optionsHtml = options.map(o => {
+        const value = String(o?.value || '');
+        const selectedAttr = selected.has(value) ? ' selected' : '';
+        return `<option value="${escapeHtml(value)}"${selectedAttr}>${escapeHtml(value)}</option>`;
+      }).join('');
+      return `
+        <div class="db-filter-item" data-filter-type="label" data-column="${escapeHtml(column)}">
+          <div class="db-filter-label">${escapeHtml(label)} (labels)</div>
+          <select class="db-filter-select" data-part="values" multiple>
+            ${optionsHtml}
+          </select>
+          <div class="db-filter-hint">Use Ctrl/Cmd click for multi-select</div>
+        </div>`;
+    }
+
+    return '';
+  }).join('');
+}
+
+function collectFiltersFromUI(tableName) {
+  const body = document.getElementById('dbFiltersBody');
+  if (!body || !tableName) return { number: [], label: [], timeline: [] };
+
+  const next = { number: [], label: [], timeline: [] };
+  const cards = body.querySelectorAll('.db-filter-item');
+
+  cards.forEach(card => {
+    const type = String(card.getAttribute('data-filter-type') || '');
+    const column = String(card.getAttribute('data-column') || '');
+    if (!column) return;
+
+    if (type === 'number') {
+      const min = card.querySelector('[data-part="min"]')?.value;
+      const max = card.querySelector('[data-part="max"]')?.value;
+      const minNum = min === '' ? NaN : Number(min);
+      const maxNum = max === '' ? NaN : Number(max);
+      if (!Number.isFinite(minNum) && !Number.isFinite(maxNum)) return;
+      next.number.push({ column, min: Number.isFinite(minNum) ? minNum : undefined, max: Number.isFinite(maxNum) ? maxNum : undefined });
+      return;
+    }
+
+    if (type === 'timeline') {
+      const from = String(card.querySelector('[data-part="from"]')?.value || '').trim();
+      const to = String(card.querySelector('[data-part="to"]')?.value || '').trim();
+      if (!from && !to) return;
+      next.timeline.push({ column, from: from || undefined, to: to || undefined });
+      return;
+    }
+
+    if (type === 'label') {
+      const values = [...(card.querySelector('[data-part="values"]')?.selectedOptions || [])]
+        .map(o => String(o.value || '').trim())
+        .filter(Boolean)
+        .slice(0, 30);
+      if (!values.length) return;
+      next.label.push({ column, values });
+    }
+  });
+
+  return next;
+}
+
+async function initDynamicFiltersUI(tableNames) {
+  const names = Array.isArray(tableNames) ? tableNames : [];
+  const sel = document.getElementById('dbFilterTableSel');
+  if (sel) {
+    sel.innerHTML = names.length
+      ? names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')
+      : '<option value="">No tables</option>';
+  }
+
+  const chosen = currentFilterTable && names.includes(currentFilterTable)
+    ? currentFilterTable
+    : bestTableName(names);
+
+  currentFilterTable = chosen;
+  if (sel) sel.value = chosen;
+  if (!chosen) {
+    renderDynamicFiltersUI('');
+    return;
+  }
+
+  await fetchFilterMetaForTable(chosen);
+  renderDynamicFiltersUI(chosen);
+}
+
+function applyDynamicFilters() {
+  if (!currentFilterTable) return;
+  activeFiltersByTable[currentFilterTable] = collectFiltersFromUI(currentFilterTable);
+  loadDashboard();
+}
+
+function resetDynamicFilters() {
+  if (!currentFilterTable) return;
+  activeFiltersByTable[currentFilterTable] = { number: [], label: [], timeline: [] };
+  renderDynamicFiltersUI(currentFilterTable);
+  loadDashboard();
+}
+
+async function handleDynamicFilterTableChange() {
+  const sel = document.getElementById('dbFilterTableSel');
+  const next = String(sel?.value || '').trim();
+  if (!next) return;
+  currentFilterTable = next;
+  await fetchFilterMetaForTable(next);
+  renderDynamicFiltersUI(next);
 }
 
 // Normalize any ECharts option to the light palette before rendering
@@ -1165,8 +1365,13 @@ async function loadDashboard() {
   workflowState.step1 = names.length > 0;
   renderSidebarSources(names);
   populateTableSelector(names);
+  initDynamicFiltersUI(names).catch(() => {
+    renderDynamicFiltersUI('');
+  });
 
   if (!names.length) {
+    currentFilterTable = '';
+    renderDynamicFiltersUI('');
     workflowState = { step1: false, step2: false, step3: false, step4: false, step5: false };
     renderWorkflowCoverage();
     return;
@@ -1672,7 +1877,15 @@ async function fetchRecommendedSmartCharts(tableNames, maxCharts) {
 
   await Promise.all(tableNames.slice(0, 6).map(async tableName => {
     try {
-      const res = await fetch(`${API}/api/charts/${encodeURIComponent(tableName)}`);
+      let res = await fetch(`${API}/api/charts/${encodeURIComponent(tableName)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filters: buildFiltersPayload(tableName) })
+      });
+      if (!res.ok) {
+        // Backward-compatible fallback for servers that only expose GET /api/charts/:tableName.
+        res = await fetch(`${API}/api/charts/${encodeURIComponent(tableName)}`);
+      }
       if (!res.ok) return;
       const data = await res.json();
       for (const c of (data.charts || [])) {
@@ -2207,6 +2420,10 @@ window.addEventListener('hashchange', () => {
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'b') { e.preventDefault(); toggleSidebar(); }
 });
+
+document.getElementById('dbApplyFiltersBtn')?.addEventListener('click', applyDynamicFilters);
+document.getElementById('dbResetFiltersBtn')?.addEventListener('click', resetDynamicFilters);
+document.getElementById('dbFilterTableSel')?.addEventListener('change', handleDynamicFilterTableChange);
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 const initialSection = String(window.location.hash || '').replace('#', '').trim() || 'overview';
