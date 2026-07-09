@@ -7,6 +7,8 @@ let chartRegistry   = {};    // chartId -> echarts instance
 let chartMetaById   = {};    // chartId -> conversion state and source option
 let pendingCharts   = [];    // {id, option, renderOpts} waiting for their section to become visible
 let sidebarOpen     = true;
+let sidebarPinned   = false;
+const SIDEBAR_PIN_KEY = 'convbi_sidebar_pinned';
 let sourceModalState = { chartId: '', activeTab: 'sql' };
 let filterMetaByTable = {};
 let activeFiltersByTable = {};
@@ -1465,12 +1467,48 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
 }
 
 function toggleSidebar() {
-  sidebarOpen = !sidebarOpen;
-  document.getElementById('sidebar').classList.toggle('collapsed', !sidebarOpen);
+  sidebarPinned = !sidebarPinned;
+  sidebarOpen = sidebarPinned;
+  applySidebarState(true);
+}
+
+function applySidebarState(persist = false) {
+  const sidebar = document.getElementById('sidebar');
+  const app = document.querySelector('.db-app');
+  const btn = document.getElementById('sidebarPinBtn');
+  if (!sidebar || !app) return;
+
+  sidebar.classList.toggle('collapsed', !sidebarOpen);
+  app.classList.toggle('sidebar-collapsed', !sidebarOpen);
+  app.classList.toggle('sidebar-expanded', sidebarOpen);
   document.body.classList.toggle('sidebar-collapsed', !sidebarOpen);
-  const btn = document.getElementById('sidebarToggle');
-  if (btn) btn.textContent = sidebarOpen ? '‹' : '›';
-  localStorage.setItem('sidebarCollapsed', sidebarOpen ? 'false' : 'true');
+
+  if (btn) {
+    btn.innerHTML = sidebarPinned ? '&#128275;' : '&#128204;';
+    btn.title = sidebarPinned ? 'Unpin sidebar' : 'Pin sidebar';
+    btn.setAttribute('aria-label', sidebarPinned ? 'Unpin sidebar' : 'Pin sidebar');
+  }
+
+  if (persist) {
+    localStorage.setItem(SIDEBAR_PIN_KEY, sidebarPinned ? 'true' : 'false');
+  }
+}
+
+function setupSidebarHoverBehavior() {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return;
+
+  sidebar.addEventListener('mouseenter', () => {
+    if (sidebarPinned) return;
+    sidebarOpen = true;
+    applySidebarState(false);
+  });
+
+  sidebar.addEventListener('mouseleave', () => {
+    if (sidebarPinned) return;
+    sidebarOpen = false;
+    applySidebarState(false);
+  });
 }
 
 function toggleHistory() {
@@ -1499,7 +1537,6 @@ async function loadDashboard() {
     ? [currentFilterTable]
     : names;
   workflowState.step1 = names.length > 0;
-  renderSidebarSources(names);
   populateTableSelector(names);
   initDynamicFiltersUI(names).catch(() => {
     renderDynamicFiltersUI('');
@@ -1556,21 +1593,6 @@ async function fetchAllSamples(names) {
     } catch (_) {}
   }));
   return samples;
-}
-
-// ── Sidebar sources ───────────────────────────────────────────────────────────
-function renderSidebarSources(names) {
-  const el = document.getElementById('sidebarSources');
-  if (!el) return;
-  const icon = s => s === 'databricks' ? '🔷' : s === 's3' ? '🟠' : '📄';
-  el.innerHTML = names.map(n => {
-    const t = loadedTables[n];
-    return `<div class="db-source-item" onclick="loadTableExplorer('${escapeHtml(n)}');showSection('tables')">
-      <span class="db-source-icon">${icon(t.source||'file')}</span>
-      <span style="overflow:hidden;text-overflow:ellipsis">${escapeHtml(n)}</span>
-      <span class="db-source-badge">${(t.rowCount||0).toLocaleString()}</span>
-    </div>`;
-  }).join('') || '<div style="padding:8px 10px;color:var(--text-muted);font-size:12px">No tables loaded</div>';
 }
 
 // ── KPI Strip ─────────────────────────────────────────────────────────────────
@@ -2559,14 +2581,15 @@ window.addEventListener('hashchange', () => {
 
 // Restore sidebar state from localStorage
 (function() {
-  if (localStorage.getItem('sidebarCollapsed') === 'true') {
-    sidebarOpen = false;
-    document.getElementById('sidebar')?.classList.add('collapsed');
-    document.body.classList.add('sidebar-collapsed');
-    const btn = document.getElementById('sidebarToggle');
-    if (btn) btn.textContent = '›';
-  }
+  const pinned = localStorage.getItem(SIDEBAR_PIN_KEY) === 'true';
+  sidebarPinned = pinned;
+  sidebarOpen = pinned;
+  applySidebarState(false);
 })();
+
+setupSidebarHoverBehavior();
+
+document.getElementById('sidebarPinBtn')?.addEventListener('click', toggleSidebar);
 
 // Ctrl+B toggles sidebar (VS Code style)
 document.addEventListener('keydown', e => {

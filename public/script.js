@@ -16,6 +16,7 @@ let tableLibraryView = localStorage.getItem('convbi_table_library_view') || 'gri
 let analyticsFlowStep = 1;
 let selectedAnalyticsTables = new Set();
 let glossaryMap = {};
+const SIDEBAR_PIN_KEY = 'convbi_sidebar_pinned';
 
 const WORKFLOW_LABELS = {
   6: 'User Asks Business Question',
@@ -717,8 +718,9 @@ async function renderAnalyticsStructureStep() {
       sampleRows = Array.isArray(data.rows) ? data.rows : [];
     } catch (_) {}
 
-    const cols = (meta.columns || []).slice(0, 24);
-    const sampleHeaders = cols.slice(0, 8).map(c => c.name);
+    const allCols = meta.columns || [];
+    const topCols = allCols.slice(0, 8);
+    const sampleHeaders = topCols.slice(0, 6).map(c => c.name);
     cards.push(`
       <div class="flow-structure-card">
         <div class="flow-table-head" style="margin-bottom:8px">
@@ -726,23 +728,29 @@ async function renderAnalyticsStructureStep() {
         </div>
         <div class="flow-meta" style="margin-bottom:8px">
           <span>${(meta.rowCount || 0).toLocaleString()} rows</span>
-          <span>${cols.length} columns shown</span>
+          <span>${allCols.length} columns</span>
           <span>${escapeHtml(meta.source || 'file')}</span>
         </div>
-        <div class="flow-mini-table-wrap" style="margin-bottom:8px">
-          <table class="flow-mini-table">
-            <thead><tr><th>Column</th><th>Type</th></tr></thead>
-            <tbody>${cols.map(c => `<tr><td>${escapeHtml(c.name || '')}</td><td>${escapeHtml(c.type || '')}</td></tr>`).join('')}</tbody>
-          </table>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px">
+          Key columns: ${topCols.map(c => `${escapeHtml(c.name || '')} (${escapeHtml(c.type || '')})`).join(', ') || 'No columns detected'}
         </div>
-        <div class="flow-mini-table-wrap">
-          <table class="flow-mini-table">
-            <thead><tr>${sampleHeaders.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
-            <tbody>
-              ${(sampleRows || []).slice(0, 5).map(r => `<tr>${sampleHeaders.map(h => `<td>${escapeHtml(String(r[h] ?? ''))}</td>`).join('')}</tr>`).join('') || '<tr><td colspan="8">No sample rows</td></tr>'}
-            </tbody>
-          </table>
-        </div>
+        <details>
+          <summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--brand-primary)">View full structure and sample rows</summary>
+          <div class="flow-mini-table-wrap" style="margin-top:8px;margin-bottom:8px">
+            <table class="flow-mini-table">
+              <thead><tr><th>Column</th><th>Type</th></tr></thead>
+              <tbody>${allCols.map(c => `<tr><td>${escapeHtml(c.name || '')}</td><td>${escapeHtml(c.type || '')}</td></tr>`).join('')}</tbody>
+            </table>
+          </div>
+          <div class="flow-mini-table-wrap">
+            <table class="flow-mini-table">
+              <thead><tr>${sampleHeaders.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
+              <tbody>
+                ${(sampleRows || []).slice(0, 5).map(r => `<tr>${sampleHeaders.map(h => `<td>${escapeHtml(String(r[h] ?? ''))}</td>`).join('')}</tr>`).join('') || '<tr><td colspan="6">No sample rows</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+        </details>
       </div>
     `);
   }
@@ -767,6 +775,35 @@ function detectCommonColumns(tableNames) {
     .slice(0, 20);
 }
 
+function getGlossaryCandidateColumns(selectedNames, joins = [], commons = [], includeAll = false) {
+  const keys = new Set();
+  const add = (tableName, columnName) => {
+    if (!tableName || !columnName) return;
+    keys.add(`${tableName}.${columnName}`);
+  };
+
+  joins.forEach(j => {
+    add(j.tableA, j.columnA);
+    add(j.tableB, j.columnB);
+  });
+
+  commons.forEach(c => {
+    c.tables.forEach(t => add(t, c.col));
+  });
+
+  selectedNames.forEach(tableName => {
+    const cols = loadedTables[tableName]?.columns || [];
+    cols.forEach(c => {
+      const col = String(c.name || '');
+      if (includeAll || /date|time|id|name|amount|sales|revenue|profit|cost|qty|count|status/i.test(col)) {
+        add(tableName, col);
+      }
+    });
+  });
+
+  return [...keys].sort();
+}
+
 async function goToRelationStep() {
   if (!selectedAnalyticsTables.size) {
     showError('Select at least one table first.');
@@ -776,7 +813,7 @@ async function goToRelationStep() {
   await renderAnalyticsRelationStep();
 }
 
-async function renderAnalyticsRelationStep() {
+async function renderAnalyticsRelationStep(includeAllGlossary = false) {
   const host = document.getElementById('flowStepRelation');
   if (!host) return;
   host.innerHTML = '<div class="no-data">Detecting relationships and preparing glossary...</div>';
@@ -793,18 +830,16 @@ async function renderAnalyticsRelationStep() {
   const joins = (relData.joins || []).filter(j => selectedNames.includes(j.tableA) && selectedNames.includes(j.tableB));
   const commons = detectCommonColumns(selectedNames);
 
-  const glossaryRows = [];
-  selectedNames.forEach(tableName => {
-    (loadedTables[tableName]?.columns || []).slice(0, 30).forEach(c => {
-      const key = `${tableName}.${c.name}`;
-      glossaryRows.push(`
-        <tr>
-          <td>${escapeHtml(tableName)}</td>
-          <td>${escapeHtml(c.name || '')}</td>
-          <td><input class="flow-glossary-input" data-glossary-key="${escapeHtml(key)}" value="${escapeHtml(glossaryMap[key] || '')}" placeholder="Example: date2 means date of birth" /></td>
-        </tr>
-      `);
-    });
+  const glossaryKeys = getGlossaryCandidateColumns(selectedNames, joins, commons, includeAllGlossary);
+  const glossaryRows = glossaryKeys.map(key => {
+    const [tableName, columnName] = key.split('.');
+    return `
+      <tr>
+        <td>${escapeHtml(tableName || '')}</td>
+        <td>${escapeHtml(columnName || '')}</td>
+        <td><input class="flow-glossary-input" data-glossary-key="${escapeHtml(key)}" value="${escapeHtml(glossaryMap[key] || '')}" placeholder="Example: date2 means date of birth" /></td>
+      </tr>
+    `;
   });
 
   host.innerHTML = `
@@ -821,16 +856,20 @@ async function renderAnalyticsRelationStep() {
 
     <div class="flow-rel-box" style="margin-top:10px">
       <div style="font-weight:700;margin-bottom:8px">Business Glossary (Column Instructions)</div>
+      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">
+        Showing ${glossaryKeys.length} important columns first for easy setup.
+      </div>
       <div class="flow-mini-table-wrap">
         <table class="flow-glossary-table">
           <thead><tr><th>Table</th><th>Column</th><th>Business meaning / instruction</th></tr></thead>
-          <tbody>${glossaryRows.join('')}</tbody>
+          <tbody>${glossaryRows.join('') || '<tr><td colspan="3">No glossary candidates found.</td></tr>'}</tbody>
         </table>
       </div>
     </div>
 
     <div class="flow-actions">
       <button class="flow-btn-secondary" onclick="goToAnalyticsFlowStep(2)">Back</button>
+      <button class="flow-btn-secondary" onclick="renderAnalyticsRelationStep(true)">Load All Columns</button>
       <button class="flow-btn-secondary" onclick="saveGlossaryFromUI()">Save Glossary</button>
       <button class="submit-btn" onclick="applyAnalyticsSelection()">Apply Selection to Analytics</button>
     </div>
@@ -1073,6 +1112,34 @@ QUERY RULES:
   return rules;
 }
 
+function buildGoldLayerContext(schemas, relationships) {
+  const scopedTables = [...selectedAnalyticsTables].filter(t => schemas[t]);
+  const glossaryEntries = Object.entries(glossaryMap || {})
+    .filter(([, v]) => String(v || '').trim())
+    .map(([k, v]) => ({ columnRef: k, meaning: String(v).trim() }))
+    .slice(0, 200);
+
+  const joinHints = Array.isArray(relationships?.joins)
+    ? relationships.joins
+      .filter(j => scopedTables.includes(j.tableA) && scopedTables.includes(j.tableB))
+      .map(j => ({
+        tableA: j.tableA,
+        tableB: j.tableB,
+        on: `${j.tableA}.${j.columnA} = ${j.tableB}.${j.columnB}`,
+        confidence: j.confidence
+      }))
+      .slice(0, 50)
+    : [];
+
+  return {
+    layer: 'gold',
+    selectedTables: scopedTables,
+    glossary: glossaryEntries,
+    joinHints,
+    note: 'Use glossary meanings and selected-table relationships as business truth before answering.'
+  };
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // MAIN QUESTION PIPELINE
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1134,6 +1201,7 @@ async function askQuestion() {
     const relRes  = await fetch(`${API}/api/detect-relationships`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({}) });
     const relData = relRes.ok ? await relRes.json() : { joins: [], noRelation: [] };
     const semanticRules = buildSemanticRulesFromSchemas(allTableSchemas);
+    const goldLayerContext = buildGoldLayerContext(allTableSchemas, relData);
 
     // 2. Decode intent
     setWorkflowRuntime(7, 'Extracting business goal, KPI, filters, period, and context.');
@@ -1145,6 +1213,7 @@ async function askQuestion() {
         schemaProfile: allTableSchemas,
         semanticRules,
         relationships: relData,
+        goldLayerContext,
         conversationContext: conversationTurns
       })
     });
@@ -1168,6 +1237,7 @@ async function askQuestion() {
         body: JSON.stringify({
           question: q, allTableSchemas, relationships: relData,
           semanticRules, decodedIntent: decoded,
+          goldLayerContext,
           ...(attempt > 0 ? { previousCode: sql, errorMessage: sqlError } : {})
         })
       });
@@ -2106,13 +2176,38 @@ function setupScrollReveal() {
   setTableLibraryView(tableLibraryView);
 
   const railBtn = document.getElementById('railCollapseBtn');
-  railBtn?.addEventListener('click', () => {
-    const rail = document.getElementById('leftRail');
-    if (!rail) return;
-    rail.classList.toggle('pinned');
-    railBtn.innerHTML = rail.classList.contains('pinned') ? '&#128275;' : '&#128204;';
-    railBtn.title = rail.classList.contains('pinned') ? 'Unpin navigation hover expansion' : 'Pin expanded navigation';
+  const rail = document.getElementById('leftRail');
+  const shell = document.querySelector('.app-shell');
+
+  const setRailPinnedState = (isPinned, persist = true) => {
+    if (!rail || !shell || !railBtn) return;
+    rail.classList.toggle('pinned', !!isPinned);
+    shell.classList.toggle('rail-expanded', !!isPinned);
+    railBtn.innerHTML = isPinned ? '&#128275;' : '&#128204;';
+    railBtn.title = isPinned ? 'Unpin sidebar' : 'Pin sidebar';
+    railBtn.setAttribute('aria-label', isPinned ? 'Unpin sidebar' : 'Pin sidebar');
+    if (persist) localStorage.setItem(SIDEBAR_PIN_KEY, isPinned ? 'true' : 'false');
+  };
+
+  const syncRailShellState = () => {
+    if (!rail || !shell) return;
+    shell.classList.toggle('rail-expanded', rail.classList.contains('pinned'));
+  };
+
+  rail?.addEventListener('mouseenter', () => {
+    if (!rail.classList.contains('pinned')) shell?.classList.add('rail-expanded');
   });
+
+  rail?.addEventListener('mouseleave', () => {
+    if (!rail.classList.contains('pinned')) shell?.classList.remove('rail-expanded');
+  });
+
+  railBtn?.addEventListener('click', () => {
+    if (!rail) return;
+    setRailPinnedState(!rail.classList.contains('pinned'));
+  });
+  setRailPinnedState(localStorage.getItem(SIDEBAR_PIN_KEY) === 'true', false);
+  syncRailShellState();
 
   const themeBtn = document.getElementById('themeToggleBtn');
   themeBtn?.addEventListener('click', () => {

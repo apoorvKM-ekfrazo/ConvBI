@@ -29,7 +29,7 @@
   --gradient-banner: linear-gradient(135deg, #7A2F8F, #0F172A);
   --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --ui: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-  --shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+  --shadow: var(--shadow-raise, 0 6px 20px rgba(15, 23, 42, 0.08));
   --radius-card: 16px;
   --radius-ui: 8px;
 }
@@ -71,7 +71,15 @@ select {
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 240px 1fr;
+  --rail-w: 78px;
+  --content-max: 1280px;
+  --qa-max: 1080px;
+  grid-template-columns: var(--rail-w) 1fr;
+  transition: grid-template-columns 220ms ease;
+}
+
+.app-shell.rail-expanded {
+  --rail-w: 286px;
 }
 
 .left-rail {
@@ -80,12 +88,12 @@ select {
   height: 100vh;
   background: var(--brand-secondary);
   border-right: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 16px;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  width: 240px;
-  transition: width 220ms ease, box-shadow 220ms ease;
+  gap: 0;
+  width: 100%;
+  transition: box-shadow 220ms ease;
 }
 
 .left-rail.collapsed {
@@ -94,12 +102,11 @@ select {
 }
 
 .left-rail.auto-collapsed {
-  width: 78px;
-  padding: 16px 10px;
+  width: 100%;
+  padding: 0;
 }
 
 .left-rail.auto-collapsed:not(.pinned):hover {
-  width: 286px;
   box-shadow: 12px 0 36px rgba(2, 6, 23, 0.3);
 }
 
@@ -117,31 +124,37 @@ select {
 }
 
 .left-rail.auto-collapsed:not(.pinned):hover .rail-name-wrap,
-.left-rail.auto-collapsed:not(.pinned):hover .rail-label-wrap,
 .left-rail.auto-collapsed:not(.pinned):hover .rail-tables-badge,
 .left-rail.auto-collapsed:not(.pinned):hover .rail-subnav,
 .left-rail.auto-collapsed.pinned .rail-name-wrap,
-.left-rail.auto-collapsed.pinned .rail-label-wrap,
 .left-rail.auto-collapsed.pinned .rail-tables-badge,
 .left-rail.auto-collapsed.pinned .rail-subnav {
   display: block;
 }
 
+.left-rail.auto-collapsed:not(.pinned):hover .rail-label-wrap,
+.left-rail.auto-collapsed.pinned .rail-label-wrap {
+  display: grid;
+}
+
 .rail-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  padding: 18px 16px 14px;
+  border-bottom: 1px solid rgba(255,255,255,.08);
 }
 
 .rail-logo {
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  background: var(--gradient-hero);
-  color: #fff;
-  display: grid;
-  place-items: center;
+  color: #F9FAFB;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 18px;
   font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.rail-logo-bi {
+  color: var(--brand-primary);
 }
 
 .rail-name {
@@ -157,18 +170,28 @@ select {
 
 .rail-collapse {
   margin-left: auto;
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255,255,255,.2);
   background: transparent;
-  border-radius: var(--radius-ui);
+  border-radius: 8px;
   width: 28px;
   height: 28px;
   cursor: pointer;
   color: #CBD5E1;
+  line-height: 1;
+  font-size: 14px;
+  display: grid;
+  place-items: center;
+}
+
+.rail-collapse:hover {
+  background: rgba(255,255,255,.08);
+  color: #fff;
 }
 
 .rail-nav {
+  padding: 8px 8px 0;
   display: grid;
-  gap: 8px;
+  gap: 2px;
 }
 
 .rail-label-wrap {
@@ -178,28 +201,34 @@ select {
 
 .rail-meta {
   font-size: 10px;
-  color: #a5b4cc;
+  color: #9fb0c8;
 }
 
 .rail-link {
   width: 100%;
   border: 1px solid transparent;
   background: transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   color: #CBD5E1;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px;
+  padding: 8px 10px;
   text-decoration: none;
   cursor: pointer;
-  min-height: 44px;
-  transition: transform 170ms ease, background 170ms ease, border-color 170ms ease, color 170ms ease;
+  min-height: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  margin-bottom: 2px;
+  transition: background .16s, color .16s, transform .16s;
+  text-align: left;
+  appearance: none;
+  -webkit-appearance: none;
+  line-height: 1.2;
 }
 
 .rail-link:hover {
-  border-color: rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255,255,255,.06);
   color: #F8FAFC;
   transform: translateX(2px);
 }
@@ -216,9 +245,9 @@ select {
 }
 
 .rail-subnav {
-  margin: -3px 0 2px 34px;
+  margin: -3px 0 5px 33px;
   padding-left: 8px;
-  border-left: 1px dashed rgba(255, 255, 255, 0.2);
+  border-left: 1px dashed rgba(255,255,255,.2);
 }
 
 .rail-subnav-item {
@@ -230,10 +259,13 @@ select {
   text-decoration: none;
   text-align: left;
   font-size: 11px;
-  border-radius: 8px;
+  border-radius: 7px;
   padding: 5px 8px;
   cursor: pointer;
-  transition: background 150ms ease, color 150ms ease, transform 150ms ease;
+  transition: background .16s, color .16s, transform .16s;
+  appearance: none;
+  -webkit-appearance: none;
+  line-height: 1.2;
 }
 
 .rail-subnav-item:hover {
@@ -244,14 +276,30 @@ select {
 
 .rail-tables-badge {
   margin-top: auto;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.08);
+  margin-right: 8px;
+  margin-bottom: 12px;
+  margin-left: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.16);
+  background: rgba(255,255,255,.05);
   color: #E2E8F0;
-  padding: 8px 10px;
-  text-align: center;
+  padding: 7px 12px;
+  text-align: left;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
+}
+
+.rail-ico {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.rail-ico svg {
+  display: block;
 }
 
 .main-shell {
@@ -311,6 +359,8 @@ select {
 
 .page-content {
   padding: 20px;
+  width: 100%;
+  min-width: 0;
 }
 
 .section {
@@ -1053,7 +1103,20 @@ th {
 }
 
 .qa-wrap {
-  max-width: 980px;
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+}
+
+.chip-card,
+#qaGuardMessage,
+.workflow-runtime,
+.composer-bar,
+#followupRail {
+  width: 100%;
+  max-width: var(--qa-max);
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .table-context-bar {
@@ -1130,7 +1193,8 @@ th {
 .messages {
   display: grid;
   gap: 10px;
-  max-width: 760px;
+  width: 100%;
+  max-width: var(--qa-max);
   margin: 0 auto;
   padding-bottom: 80px;
 }
@@ -1148,7 +1212,7 @@ th {
 }
 
 .msg-bubble {
-  max-width: min(760px, 100%);
+  max-width: min(980px, 100%);
   border: 1px solid var(--border-subtle);
   border-radius: 12px;
   padding: 12px;

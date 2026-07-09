@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles/dashboard.css">
+  <link rel="stylesheet" href="styles/theme.css">
 </head>
 <body>
 <div class="db-app">
@@ -15,53 +16,53 @@
   <aside class="db-sidebar" id="sidebar">
     <div class="db-sidebar-header">
       <span class="db-logo">Conv<span class="db-logo-bi">BI</span></span>
+      <button class="db-sidebar-pin" id="sidebarPinBtn" aria-label="Pin sidebar" title="Pin sidebar">&#128204;</button>
     </div>
 
     <nav class="db-nav">
       <a class="db-nav-item" href="/" onclick="window.location.href='/'">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8h12M8 2v12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-        <span>Data Input</span>
+        <span class="db-nav-label-wrap">
+          <span>Data Input</span>
+          <span class="db-nav-meta">Upload and prepare</span>
+        </span>
       </a>
+      <div class="db-subnav">
+        <a class="db-subnav-item" href="/" onclick="window.location.href='/'">Upload Files</a>
+        <a class="db-subnav-item" href="/" onclick="window.location.href='/?tab=input#databricks'">Databricks</a>
+        <a class="db-subnav-item" href="/" onclick="window.location.href='/?tab=input#s3'">AWS S3</a>
+      </div>
       <a class="db-nav-item active" href="#overview" onclick="showSection('overview')">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.3"/></svg>
-        <span>Dashboard</span>
+        <span class="db-nav-label-wrap">
+          <span>Dashboard</span>
+          <span class="db-nav-meta">Visual insights</span>
+        </span>
       </a>
+      <div class="db-subnav">
+        <a class="db-subnav-item" href="#overview" onclick="showSection('overview')">Overview</a>
+        <a class="db-subnav-item" href="#charts" onclick="showSection('charts')">Charts</a>
+        <a class="db-subnav-item" href="#tables" onclick="showSection('tables')">Table Explorer</a>
+        <a class="db-subnav-item" href="#insights" onclick="showSection('insights')">Saved Insights</a>
+      </div>
       <a class="db-nav-item" href="/?tab=qa" onclick="window.location.href='/?tab=qa'">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 3h12v8H6l-4 3V3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
-        <span>Ask Questions</span>
+        <span class="db-nav-label-wrap">
+          <span>Ask Questions</span>
+          <span class="db-nav-meta">Natural language BI</span>
+        </span>
       </a>
+      <div class="db-subnav">
+        <a class="db-subnav-item" href="/?tab=qa" onclick="window.location.href='/?tab=qa'">Suggested Questions</a>
+        <a class="db-subnav-item" href="/?tab=qa" onclick="window.location.href='/?tab=qa'">Custom Question</a>
+        <a class="db-subnav-item" href="/?tab=qa" onclick="window.location.href='/?tab=qa'">Follow-up Analysis</a>
+      </div>
     </nav>
-
-    <div class="db-sidebar-section-label">Dashboard Sections</div>
-
-    <nav class="db-nav">
-      <a class="db-nav-item active" href="#overview"   onclick="showSection('overview')">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="1" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="1" y="9" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.3"/></svg>
-        <span>Overview</span>
-      </a>
-      <a class="db-nav-item" href="#charts"    onclick="showSection('charts')">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 13V8M6 13V5M10 13V3M14 13V7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-        <span>Charts</span>
-      </a>
-      <a class="db-nav-item" href="#tables"    onclick="showSection('tables')">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="2" width="14" height="12" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M1 6h14M5 6v8M10 6v8" stroke="currentColor" stroke-width="1.2"/></svg>
-        <span>Data Tables</span>
-      </a>
-      <a class="db-nav-item" href="#insights"  onclick="showSection('insights')">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2a5 5 0 100 10A5 5 0 008 2zM8 7v3M8 5.5v.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-        <span>Saved Insights</span>
-      </a>
-    </nav>
-
-    <div class="db-sidebar-section-label">Data Sources</div>
-    <div id="sidebarSources" class="db-source-list"></div>
 
     <div class="db-sidebar-footer">
       <button class="db-refresh-btn-full" onclick="loadDashboard()">↺ Refresh</button>
     </div>
   </aside>
-  <button id="sidebarToggle" class="db-float-toggle" onclick="toggleSidebar()" aria-label="Toggle sidebar" title="Toggle sidebar (Ctrl+B)">‹</button>
-
   <!-- ══ MAIN CONTENT ══ -->
   <main class="db-main" id="dbMain">
 

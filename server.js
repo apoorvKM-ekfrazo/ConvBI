@@ -1960,7 +1960,7 @@ RULES:
 
 app.post('/api/decode-intent', async (req, res) => {
   try {
-    const { question, schemaProfile, semanticRules, relationships, conversationContext } = req.body;
+    const { question, schemaProfile, semanticRules, relationships, conversationContext, goldLayerContext } = req.body;
     if (!question) return res.status(400).json({ error: 'Missing question.' });
 
     const schemaCtx = schemaProfile
@@ -1972,6 +1972,9 @@ app.post('/api/decode-intent', async (req, res) => {
       : '';
     const convoCtx = Array.isArray(conversationContext) && conversationContext.length
       ? `\n\nCONVERSATION CONTEXT (recent turns):\n${JSON.stringify(conversationContext.slice(-6), null, 2)}`
+      : '';
+    const goldCtx  = goldLayerContext
+      ? `\n\nGOLD LAYER CONTEXT:\n${typeof goldLayerContext === 'string' ? goldLayerContext : JSON.stringify(goldLayerContext, null, 2)}`
       : '';
 
     const preferComplex = isComplexQuestion(question);
@@ -1987,7 +1990,7 @@ app.post('/api/decode-intent', async (req, res) => {
       preferComplex,
       openaiModels: models,
       messages: [
-        { role: 'system', content: DECODE_INTENT_SYSTEM + schemaCtx + rulesCtx + relCtx + convoCtx },
+        { role: 'system', content: DECODE_INTENT_SYSTEM + schemaCtx + rulesCtx + relCtx + convoCtx + goldCtx },
         { role: 'user', content: `Question: ${question}` }
       ]
     });
@@ -2006,9 +2009,14 @@ app.post('/api/decode-intent', async (req, res) => {
 // LAYER 2 — SQL CODE GENERATION (DuckDB)
 // ════════════════════════════════════════════════════════════════════════════════
 
-function buildSQLCodeGenPrompt(allTableSchemas, relationships, decodedIntent) {
+function buildSQLCodeGenPrompt(allTableSchemas, relationships, decodedIntent, goldLayerContext) {
   const schemaStr = JSON.stringify(allTableSchemas, null, 2);
   const relStr    = relationships ? JSON.stringify(relationships, null, 2) : '[]';
+  const goldSection = goldLayerContext ? `
+
+GOLD LAYER CONTEXT:
+${typeof goldLayerContext === 'string' ? goldLayerContext : JSON.stringify(goldLayerContext, null, 2)}
+` : '';
   const intentSection = decodedIntent ? `
 DECODED INTENT — implement this exactly:
 - WHAT TO CALCULATE: ${decodedIntent.what_to_calculate || 'N/A'}
@@ -2029,6 +2037,7 @@ ${schemaStr}
 
 DETECTED RELATIONSHIPS:
 ${relStr}
+${goldSection}
 ${intentSection}
 DuckDB RULES:
 1. Return ONLY a \`\`\`sql code block — no explanation, no extra text.
@@ -2059,12 +2068,12 @@ DuckDB RULES:
 app.post('/api/generate-code', async (req, res) => {
   try {
     const { question, schemaJson, semanticRules, decodedIntent,
-            allTableSchemas, relationships, previousCode, errorMessage } = req.body;
+            allTableSchemas, relationships, previousCode, errorMessage, goldLayerContext } = req.body;
     if (!question) return res.status(400).json({ error: 'Missing question.' });
 
     // Prefer allTableSchemas (v2); fall back to schemaJson (v1 compat)
     const schemas = allTableSchemas || (schemaJson ? { main: { columns: [], schemaJson } } : null);
-    const sysPrompt = buildSQLCodeGenPrompt(schemas || {}, relationships || [], decodedIntent || null);
+    const sysPrompt = buildSQLCodeGenPrompt(schemas || {}, relationships || [], decodedIntent || null, goldLayerContext || null);
 
     const preferComplex = isComplexQuestion(question);
     const models = preferComplex
@@ -2637,10 +2646,10 @@ app.post('/api/schema-relationships', (req, res) => {
 // /api/generate-code-validated — server-side SQL validation loop
 app.post('/api/generate-code-validated', async (req, res) => {
   try {
-    const { question, allTableSchemas, relationships, decodedIntent, maxRetries = 3 } = req.body;
+    const { question, allTableSchemas, relationships, decodedIntent, maxRetries = 3, goldLayerContext } = req.body;
     if (!question) return res.status(400).json({ error: 'Missing question.' });
 
-    const sysPrompt = buildSQLCodeGenPrompt(allTableSchemas || {}, relationships || [], decodedIntent || null);
+    const sysPrompt = buildSQLCodeGenPrompt(allTableSchemas || {}, relationships || [], decodedIntent || null, goldLayerContext || null);
     const models    = isComplexQuestion(question)
       ? [COMPLEX_MODEL, ...MODEL_CANDIDATES.filter(m => m !== COMPLEX_MODEL)]
       : MODEL_CANDIDATES;
