@@ -11,6 +11,7 @@ let sourceModalState = { chartId: '', activeTab: 'sql' };
 let filterMetaByTable = {};
 let activeFiltersByTable = {};
 let currentFilterTable = '';
+let filtersPanelExpanded = false;
 
 const CHART_TYPE_SEQUENCE = ['auto', 'bar', 'hbar', 'line', 'area', 'donut', 'rose', 'scatter'];
 const CHART_PREFS_KEY = 'convbi_chart_type_prefs_v1';
@@ -63,6 +64,7 @@ let workflowState = {
 // ── Section navigation ────────────────────────────────────────────────────────
 function showSection(name) {
   const sectionName = ['overview', 'charts', 'tables', 'insights'].includes(name) ? name : 'overview';
+  toggleFiltersPanel(false);
   document.querySelectorAll('.db-section').forEach(s => s.classList.remove('active'));
   document.getElementById('section-' + sectionName)?.classList.add('active');
   document.querySelectorAll('.db-nav-item').forEach(a => {
@@ -92,12 +94,134 @@ function bestTableName(names = []) {
   return [...names].sort((a, b) => Number(loadedTables[b]?.rowCount || 0) - Number(loadedTables[a]?.rowCount || 0))[0] || '';
 }
 
+function prettifyTableLabel(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return 'Table';
+
+  // Keep only the last path segment and remove common file extensions.
+  let label = raw.split(/[\\/]/).pop() || raw;
+  label = label.replace(/\.(csv|tsv|xlsx?|json|parquet)$/i, '');
+
+  // Remove numeric/import prefixes often found in generated table names.
+  label = label.replace(/^_+/, '').replace(/^\d+_+/, '');
+
+  const words = label
+    .split(/[_\s-]+/)
+    .map(w => w.trim())
+    .filter(Boolean);
+
+  if (!words.length) return raw;
+
+  // Collapse duplicate adjacent words like "Campaign_Campaign".
+  const compact = [];
+  words.forEach(w => {
+    if (!compact.length || compact[compact.length - 1].toLowerCase() !== w.toLowerCase()) {
+      compact.push(w);
+    }
+  });
+
+  // Remove exact repeated halves: [A B A B] -> [A B]
+  let normalized = compact;
+  if (compact.length >= 4 && compact.length % 2 === 0) {
+    const half = compact.length / 2;
+    const first = compact.slice(0, half).map(w => w.toLowerCase());
+    const second = compact.slice(half).map(w => w.toLowerCase());
+    if (first.join('|') === second.join('|')) {
+      normalized = compact.slice(0, half);
+    }
+  }
+
+  return normalized
+    .map(w => w.length <= 3 ? w.toUpperCase() : (w[0].toUpperCase() + w.slice(1).toLowerCase()))
+    .join(' ');
+}
+
 function getActiveFiltersForTable(tableName) {
   return activeFiltersByTable[tableName] || { number: [], label: [], timeline: [] };
 }
 
 function buildFiltersPayload(tableName) {
   return getActiveFiltersForTable(tableName);
+}
+
+function sqlQuoteIdent(name) {
+  return `"${String(name || '').replace(/"/g, '""')}"`;
+}
+
+function sqlQuoteLiteral(value) {
+  return `'${String(value ?? '').replace(/'/g, "''")}'`;
+}
+
+function buildWhereClauseFromFilters(tableName) {
+  const active = getActiveFiltersForTable(tableName);
+  const clauses = [];
+
+  (active.number || []).forEach(f => {
+    const col = sqlQuoteIdent(f.column);
+    const min = Number(f.min);
+    const max = Number(f.max);
+    if (Number.isFinite(min)) clauses.push(`${col} >= ${min}`);
+    if (Number.isFinite(max)) clauses.push(`${col} <= ${max}`);
+  });
+
+  (active.timeline || []).forEach(f => {
+    const col = sqlQuoteIdent(f.column);
+    const from = String(f.from || '').trim();
+    const to = String(f.to || '').trim();
+    if (from) clauses.push(`${col} >= ${sqlQuoteLiteral(from)}`);
+    if (to) clauses.push(`${col} <= ${sqlQuoteLiteral(to)}`);
+  });
+
+  (active.label || []).forEach(f => {
+    const values = Array.isArray(f.values)
+      ? f.values.map(v => String(v || '').trim()).filter(Boolean).slice(0, 50)
+      : [];
+    if (!values.length) return;
+    const col = sqlQuoteIdent(f.column);
+    const list = values.map(sqlQuoteLiteral).join(', ');
+    clauses.push(`${col} IN (${list})`);
+  });
+
+  return clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
+}
+
+function getActiveFilterCount(tableName) {
+  const active = getActiveFiltersForTable(tableName);
+  return (active.number || []).length + (active.label || []).length + (active.timeline || []).length;
+}
+
+function refreshFilterChip() {
+  const chip = document.getElementById('dbFiltersChip');
+  if (!chip) return;
+  const count = currentFilterTable ? getActiveFilterCount(currentFilterTable) : 0;
+  chip.textContent = count === 0 ? 'No filters applied' : `${count} filter${count === 1 ? '' : 's'} applied`;
+  chip.classList.toggle('is-applied', count > 0);
+  chip.classList.toggle('is-empty', count === 0);
+  chip.setAttribute('aria-label', chip.textContent);
+}
+
+function updateFiltersPanelState() {
+  const shell = document.getElementById('dbFiltersShell');
+  const btn = document.getElementById('dbFilterToggleBtn');
+  const drawer = document.getElementById('dbFiltersDrawer');
+  const backdrop = document.getElementById('dbFiltersBackdrop');
+  if (!shell || !btn || !drawer || !backdrop) return;
+
+  shell.classList.toggle('is-active', filtersPanelExpanded);
+  drawer.classList.toggle('open', filtersPanelExpanded);
+  backdrop.classList.toggle('open', filtersPanelExpanded);
+  btn.textContent = filtersPanelExpanded ? 'Hide' : 'Show';
+  btn.setAttribute('aria-expanded', filtersPanelExpanded ? 'true' : 'false');
+}
+
+function toggleFiltersPanel(forceState) {
+  if (typeof forceState === 'boolean') {
+    filtersPanelExpanded = forceState;
+  } else {
+    filtersPanelExpanded = !filtersPanelExpanded;
+  }
+  localStorage.setItem('convbi_filters_expanded', filtersPanelExpanded ? 'true' : 'false');
+  updateFiltersPanelState();
 }
 
 async function fetchFilterMetaForTable(tableName) {
@@ -127,12 +251,13 @@ function renderDynamicFiltersUI(tableName) {
   const mode = String(payload?.mode || 'fallback');
 
   if (!tableName || !filters.length) {
-    meta.textContent = 'No dynamic filters detected for current data';
+    meta.textContent = 'No relevant filters detected for selected data';
     body.innerHTML = '<div class="db-filter-item"><div class="db-filter-label">No recommended filters available</div><div class="db-filter-hint">Load a richer dataset to unlock dynamic filter controls.</div></div>';
+    refreshFilterChip();
     return;
   }
 
-  meta.textContent = `${tableName} · ${filters.length} filters · ${mode === 'ai' ? 'AI-ranked' : 'deterministic'}`;
+  meta.textContent = `${filters.length} relevant filters${mode === 'ai' ? ' · AI-ranked' : ''}`;
 
   const active = getActiveFiltersForTable(tableName);
   const activeNumber = new Map((active.number || []).map(f => [f.column, f]));
@@ -194,6 +319,8 @@ function renderDynamicFiltersUI(tableName) {
 
     return '';
   }).join('');
+
+  refreshFilterChip();
 }
 
 function collectFiltersFromUI(tableName) {
@@ -244,7 +371,7 @@ async function initDynamicFiltersUI(tableNames) {
   const sel = document.getElementById('dbFilterTableSel');
   if (sel) {
     sel.innerHTML = names.length
-      ? names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')
+      ? names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(prettifyTableLabel(n))}</option>`).join('')
       : '<option value="">No tables</option>';
   }
 
@@ -256,6 +383,7 @@ async function initDynamicFiltersUI(tableNames) {
   if (sel) sel.value = chosen;
   if (!chosen) {
     renderDynamicFiltersUI('');
+    refreshFilterChip();
     return;
   }
 
@@ -266,6 +394,8 @@ async function initDynamicFiltersUI(tableNames) {
 function applyDynamicFilters() {
   if (!currentFilterTable) return;
   activeFiltersByTable[currentFilterTable] = collectFiltersFromUI(currentFilterTable);
+  refreshFilterChip();
+  toggleFiltersPanel(false);
   loadDashboard();
 }
 
@@ -273,6 +403,7 @@ function resetDynamicFilters() {
   if (!currentFilterTable) return;
   activeFiltersByTable[currentFilterTable] = { number: [], label: [], timeline: [] };
   renderDynamicFiltersUI(currentFilterTable);
+  refreshFilterChip();
   loadDashboard();
 }
 
@@ -283,6 +414,8 @@ async function handleDynamicFilterTableChange() {
   currentFilterTable = next;
   await fetchFilterMetaForTable(next);
   renderDynamicFiltersUI(next);
+  refreshFilterChip();
+  loadDashboard();
 }
 
 // Normalize any ECharts option to the light palette before rendering
@@ -1362,6 +1495,9 @@ async function loadDashboard() {
   } catch (_) { loadedTables = {}; }
 
   const names = Object.keys(loadedTables);
+  const scopedNames = (currentFilterTable && names.includes(currentFilterTable))
+    ? [currentFilterTable]
+    : names;
   workflowState.step1 = names.length > 0;
   renderSidebarSources(names);
   populateTableSelector(names);
@@ -1379,7 +1515,7 @@ async function loadDashboard() {
 
   // Parallel: pull sample rows + detect relationships
   const [samples, relData] = await Promise.all([
-    fetchAllSamples(names),
+    fetchAllSamples(scopedNames),
     fetch(`${API}/api/detect-relationships`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }).then(r => r.ok ? r.json() : { joins: [], noRelation: [] }).catch(() => ({ joins: [], noRelation: [] }))
   ]);
 
@@ -1387,11 +1523,11 @@ async function loadDashboard() {
   workflowState.step3 = hasBusinessSignals(samples);
 
   await renderKPIStrip(samples);
-  renderRelationshipMap(names, relData);
-  const sharedSmartDefs = await fetchRecommendedSmartCharts(names, 6);
+  renderRelationshipMap(scopedNames, relData);
+  const sharedSmartDefs = await fetchRecommendedSmartCharts(scopedNames, 6);
   const [overviewCount, chartCount] = await Promise.all([
-    renderSmartCharts(names, 'overviewCharts', 2, samples, sharedSmartDefs),
-    renderSmartCharts(names, 'chartsSection', 6, samples, sharedSmartDefs)
+    renderSmartCharts(scopedNames, 'overviewCharts', 2, samples, sharedSmartDefs),
+    renderSmartCharts(scopedNames, 'chartsSection', 6, samples, sharedSmartDefs)
   ]);
   workflowState.step4 = (overviewCount + chartCount) > 0;
   renderWorkflowCoverage();
@@ -1399,7 +1535,7 @@ async function loadDashboard() {
   renderInsights();
 
   // Data story (async — LLM call)
-  generateDataStory(samples, names);
+  generateDataStory(samples, scopedNames);
 
   document.getElementById('dbLastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
 }
@@ -1408,9 +1544,10 @@ async function fetchAllSamples(names) {
   const samples = {};
   await Promise.all(names.slice(0, 6).map(async name => {
     try {
+      const whereClause = buildWhereClauseFromFilters(name);
       const r = await fetch(`${API}/api/execute-sql`, {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ sql: `SELECT * FROM "${name}" LIMIT 500` })
+        body: JSON.stringify({ sql: `SELECT * FROM ${sqlQuoteIdent(name)}${whereClause} LIMIT 500` })
       });
       if (r.ok) {
         const d = await r.json();
@@ -2424,6 +2561,19 @@ document.addEventListener('keydown', e => {
 document.getElementById('dbApplyFiltersBtn')?.addEventListener('click', applyDynamicFilters);
 document.getElementById('dbResetFiltersBtn')?.addEventListener('click', resetDynamicFilters);
 document.getElementById('dbFilterTableSel')?.addEventListener('change', handleDynamicFilterTableChange);
+document.getElementById('dbFilterToggleBtn')?.addEventListener('click', toggleFiltersPanel);
+document.getElementById('dbFilterCloseBtn')?.addEventListener('click', () => toggleFiltersPanel(false));
+document.getElementById('dbFiltersBackdrop')?.addEventListener('click', () => toggleFiltersPanel(false));
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && filtersPanelExpanded) {
+    toggleFiltersPanel(false);
+  }
+});
+
+filtersPanelExpanded = localStorage.getItem('convbi_filters_expanded') === 'true';
+updateFiltersPanelState();
+refreshFilterChip();
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 const initialSection = String(window.location.hash || '').replace('#', '').trim() || 'overview';

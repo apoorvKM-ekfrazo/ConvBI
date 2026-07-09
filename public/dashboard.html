@@ -62,19 +62,31 @@
     </header>
 
     <section class="db-filters-shell" id="dbFiltersShell">
-      <div class="db-filters-head">
-        <div class="db-filters-title">Dynamic Filters</div>
-        <div style="display:flex;align-items:center;gap:10px;">
-          <select id="dbFilterTableSel" class="db-filter-select" style="min-width:180px;"></select>
+      <div class="db-filters-head db-filters-head-compact">
+        <div>
+          <div class="db-filters-title">Dynamic Filters</div>
           <div class="db-filters-meta" id="dbFiltersMeta">No filters yet</div>
         </div>
+        <div class="db-filters-toolbar">
+          <select id="dbFilterTableSel" class="db-filter-select db-filter-table-select"></select>
+          <span class="db-filters-chip" id="dbFiltersChip">0 active</span>
+          <button class="db-filter-btn" id="dbFilterToggleBtn" type="button" aria-expanded="false" aria-controls="dbFiltersDrawer">Show</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="db-filters-backdrop" id="dbFiltersBackdrop" aria-hidden="true"></div>
+    <aside class="db-filters-drawer" id="dbFiltersDrawer" aria-label="Dashboard filters">
+      <div class="db-filters-drawer-head">
+        <div class="db-filters-drawer-title">Filters</div>
+        <button class="db-filters-drawer-close" id="dbFilterCloseBtn" type="button" aria-label="Close filters">✕</button>
       </div>
       <div class="db-filters-body" id="dbFiltersBody"></div>
       <div class="db-filters-actions">
         <button class="db-filter-btn" id="dbApplyFiltersBtn" type="button">Apply Filters</button>
         <button class="db-filter-btn db-filter-btn-ghost" id="dbResetFiltersBtn" type="button">Reset</button>
       </div>
-    </section>
+    </aside>
 
     <!-- ── OVERVIEW SECTION ── -->
     <section id="section-overview" class="db-section active">
