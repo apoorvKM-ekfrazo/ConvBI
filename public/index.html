@@ -97,18 +97,7 @@
       <div class="di-stepper" id="diStepper" aria-label="Data input workflow steps"></div>
 
       <div class="di-guidance card" id="diGuidance">
-        <div class="di-guidance-col">
-          <div class="di-guidance-title">What is this?</div>
-          <div class="di-guidance-text" id="diWhatText">Choose how you want to connect business data.</div>
-        </div>
-        <div class="di-guidance-col">
-          <div class="di-guidance-title">Why is this important?</div>
-          <div class="di-guidance-text" id="diWhyText">Correct source setup ensures accurate schema detection and analytics quality.</div>
-        </div>
-        <div class="di-guidance-col">
-          <div class="di-guidance-title">Need Help?</div>
-          <div class="di-guidance-text" id="diHelpText">Select one source card to continue. You can return to this step anytime.</div>
-        </div>
+        <div class="di-guidance-text" id="diStepHint">Choose how you want to connect business data.</div>
       </div>
 
       <div class="di-stage card" id="diStage1">
@@ -245,13 +234,8 @@
         <h3 class="di-title">Select Files</h3>
         <p class="di-subtitle">Choose one or more files, or drag and drop into the upload zone.</p>
 
-        <div class="template-bar">
-          <span>Filtered by selected type. Invalid formats are blocked automatically.</span>
-          <span class="template-link" onclick="downloadTemplate()">Download sample CSV</span>
-        </div>
-
         <div class="card" style="padding:10px 12px;margin-bottom:10px;display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap">
-          <div style="font-size:12px;color:var(--t2)">Single or multiple file upload is supported.</div>
+          <div style="font-size:12px;color:var(--t2)">Select files to import.</div>
           <div style="display:flex;gap:8px;align-items:center">
             <button class="mini-btn" type="button" onclick="openFilePicker()">Add Files</button>
             <button class="mini-btn" type="button" onclick="clearPendingFiles()">Clear Selection</button>
@@ -335,9 +319,11 @@
 
       <div class="di-stage card" id="diStage8" style="display:none">
         <h3 class="di-title">Import Result</h3>
+        <p class="di-subtitle">Review import status and choose next step.</p>
         <div id="diImportResult"></div>
         <div class="di-actions">
-          <button class="submit-btn" type="button" onclick="continueFromImportResult()">Continue</button>
+          <button class="flow-btn-secondary" type="button" onclick="quickStartAfterImport()">Quick Start</button>
+          <button class="submit-btn" type="button" onclick="continueFromImportResult()">Advanced Setup</button>
         </div>
       </div>
 

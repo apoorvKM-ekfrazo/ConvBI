@@ -49,10 +49,10 @@ const DI_STEPS = [
   { id: 5, title: 'Sheet Selection', what: 'Pick sheets from workbooks when in Sheet Mode.', why: 'Sheet-level control reduces noise in analytics.', help: 'Use search, Select All, and Clear All to work faster.' },
   { id: 6, title: 'Import Summary', what: 'Review source, files, and mode before import.', why: 'A quick review prevents costly import mistakes.', help: 'Use Back if anything looks incorrect.' },
   { id: 7, title: 'Import Progress', what: 'Track exactly what the system is doing.', why: 'Transparent progress improves trust and troubleshooting.', help: 'Wait until import finishes and result is shown.' },
-  { id: 8, title: 'Import Result', what: 'Review imported tables and any skipped items.', why: 'Clear outcome helps immediate correction if needed.', help: 'Continue to table selection after reviewing.' },
-  { id: 9, title: 'Table Selection', what: 'Choose tables for analytics scope.', why: 'Restricting scope improves answer relevance and speed.', help: 'Use search and bulk actions for large table sets.' },
+  { id: 8, title: 'Import Result', what: 'Review imported tables and any skipped items.', why: 'This is your decision point between Quick Start and Advanced setup.', help: 'Use Quick Start for faster onboarding or Advanced Setup for deeper review.' },
+  { id: 9, title: 'Table Selection', what: 'Choose tables for analytics scope.', why: 'Scope control improves answer relevance and speed in larger datasets.', help: 'This step is skipped automatically for single-table imports.' },
   { id: 10, title: 'Table Structure', what: 'Validate schema and sample values.', why: 'Early structure checks prevent downstream query confusion.', help: 'Review key columns and detected types before continuing.' },
-  { id: 11, title: 'Relationships & Glossary', what: 'Configure joins and business meanings.', why: 'Business semantics improve AI answer quality.', help: 'Accept suggestions, then refine glossary definitions.' },
+  { id: 11, title: 'Relationships & Glossary', what: 'Review relationships and complete glossary instructions.', why: 'Glossary setup is required for both single and multiple table imports.', help: 'Define business meanings clearly, then continue to Ready.' },
   { id: 12, title: 'Complete', what: 'Finalize and move to analytics.', why: 'Completing setup ensures reliable dashboard and Q&A flow.', help: 'Proceed to dashboard when ready.' }
 ];
 
@@ -60,6 +60,7 @@ let wizardStep = 1;
 let wizardCompletedStep = 0;
 let selectedDataSource = '';
 let lastImportResult = null;
+let quickStartUsed = false;
 
 function maxAllowedWizardStep() {
   return Math.max(1, wizardCompletedStep + 1);
@@ -67,6 +68,11 @@ function maxAllowedWizardStep() {
 
 function updateWizardGuidance(stepId) {
   const def = DI_STEPS.find(s => s.id === stepId) || DI_STEPS[0];
+  const stepHint = document.getElementById('diStepHint');
+  if (stepHint) {
+    stepHint.textContent = `${def.what} ${def.help}`;
+    return;
+  }
   const w = document.getElementById('diWhatText');
   const y = document.getElementById('diWhyText');
   const h = document.getElementById('diHelpText');
@@ -78,9 +84,27 @@ function updateWizardGuidance(stepId) {
 function renderWizardStepper() {
   const stepper = document.getElementById('diStepper');
   if (!stepper) return;
-  stepper.innerHTML = DI_STEPS.map(step => {
+  const loadedNames = Object.keys(loadedTables || {});
+  const hiddenSteps = new Set();
+  if (selectedUploadType && selectedUploadType !== 'excel') {
+    hiddenSteps.add(3);
+    hiddenSteps.add(5);
+  }
+  if (selectedUploadType === 'excel' && excelImportMode !== 'selected') {
+    hiddenSteps.add(5);
+  }
+  if (loadedNames.length === 1) {
+    hiddenSteps.add(9);
+  }
+  if (quickStartUsed) {
+    hiddenSteps.add(9);
+    hiddenSteps.add(10);
+  }
+
+  const visibleSteps = DI_STEPS.filter(step => !hiddenSteps.has(step.id));
+  stepper.innerHTML = visibleSteps.map((step, idx) => {
     const state = step.id < wizardStep ? 'done' : (step.id === wizardStep ? 'current' : 'disabled');
-    const marker = step.id <= wizardCompletedStep ? '✓' : String(step.id);
+    const marker = step.id <= wizardCompletedStep ? '✓' : String(idx + 1);
     return `<div class="di-step-item ${state}" aria-current="${step.id === wizardStep ? 'step' : 'false'}"><div class="n">${marker}</div><div class="t">${escapeHtml(step.title)}</div></div>`;
   }).join('');
 }
@@ -197,8 +221,53 @@ function goBackFromSummary() {
 }
 
 function continueFromImportResult() {
+  quickStartUsed = false;
   markWizardStepDone(8);
+  const names = Object.keys(loadedTables || {});
+  if (!names.length) {
+    showError('No imported tables found. Please import at least one table.');
+    return;
+  }
+
+  if (names.length === 1) {
+    selectedAnalyticsTables = new Set([names[0]]);
+    activeTableSet = new Set(selectedAnalyticsTables);
+    persistAnalyticsPreferences();
+    syncQAAvailability();
+    refreshTableContextBar();
+    showSuccess('Single table detected. Table selection skipped. Review structure, then continue to glossary.');
+    goToWizardStep(10, { force: true });
+    return;
+  }
+
   goToWizardStep(9, { force: true });
+}
+
+function quickStartAfterImport() {
+  quickStartUsed = true;
+  const names = Object.keys(loadedTables || {});
+  if (!names.length) {
+    showError('No imported tables found. Please import at least one table.');
+    return;
+  }
+
+  selectedAnalyticsTables = new Set(names);
+  activeTableSet = new Set(selectedAnalyticsTables);
+  persistAnalyticsPreferences();
+  syncQAAvailability();
+  refreshTableContextBar();
+
+  markWizardStepDone(8);
+  markWizardStepDone(9);
+  markWizardStepDone(10);
+
+  if (names.length === 1) {
+    showSuccess('Quick Start applied. Relationships skipped for single-table mode. Complete glossary to finish setup.');
+  } else {
+    showSuccess('Quick Start applied. Review relationships and complete glossary to finish setup.');
+  }
+
+  goToWizardStep(11, { force: true });
 }
 
 function filterExcelSheets() {
@@ -224,18 +293,11 @@ function selectAllExcelSheets(checked) {
 function renderImportSummary() {
   const host = document.getElementById('diImportSummary');
   if (!host) return;
-  const estimatedRows = pendingFiles.reduce((sum, f) => sum + Math.max(1000, Math.floor((f.size || 0) / 80)), 0);
-  const estimatedTables = selectedUploadType === 'excel' && excelImportMode === 'workbook'
-    ? Math.max(1, getPendingExcelFiles().length * 2)
-    : pendingFiles.length;
   const cards = [
     { k: 'Source', v: selectedDataSource || 'Files' },
     { k: 'File Type', v: (UPLOAD_TYPE_CONFIG[selectedUploadType]?.label || selectedUploadType || 'Not selected').replace(' / TSV', '') },
     { k: 'Selected Files', v: String(pendingFiles.length) },
-    { k: 'Import Mode', v: selectedUploadType === 'excel' ? (excelImportMode === 'selected' ? 'Sheet' : 'Workbook') : 'Standard' },
-    { k: 'Estimated Tables', v: estimatedTables.toLocaleString() },
-    { k: 'Estimated Rows', v: estimatedRows.toLocaleString() },
-    { k: 'Warnings', v: 'None' }
+    { k: 'Import Mode', v: selectedUploadType === 'excel' ? (excelImportMode === 'selected' ? 'Sheet' : 'Workbook') : 'Standard' }
   ];
   host.innerHTML = cards.map(c => `<div class="di-summary-card"><div class="di-summary-k">${escapeHtml(c.k)}</div><div class="di-summary-v">${escapeHtml(c.v)}</div></div>`).join('');
 }
@@ -260,15 +322,27 @@ function renderImportResult(data = {}) {
   const tables = Array.isArray(data.tables) ? data.tables : [];
   const errors = Array.isArray(data.errors) ? data.errors : [];
   const totalRows = tables.reduce((sum, t) => sum + Number(t.rowCount || 0), 0);
-  const successCard = `
+  const hasSuccess = tables.length > 0;
+  const successCard = hasSuccess ? `
     <div class="di-result-good">
       <div style="font-size:16px;font-weight:700;margin-bottom:6px">✓ Import Completed Successfully</div>
       <div style="font-size:13px;color:var(--text-secondary)">Imported ${tables.length} table${tables.length !== 1 ? 's' : ''} with ${totalRows.toLocaleString()} rows.</div>
-    </div>`;
-  const imported = `<div class="di-summary-card" style="margin-bottom:10px"><div class="di-summary-k">Imported Tables</div><div class="di-summary-v" style="font-size:13px;font-weight:500">${tables.map(t => escapeHtml(t.tableName || t.name || '')).join(', ') || 'None'}</div></div>`;
-  const skipped = errors.length
-    ? `<div class="di-result-bad"><div style="font-size:13px;font-weight:700;margin-bottom:6px">Skipped Files</div>${errors.map(e => `<div style="font-size:12px;margin-bottom:4px">${escapeHtml(e.file || e.tableId || 'Unknown')} — ${escapeHtml(e.error || 'Unknown reason')}</div>`).join('')}</div>`
+    </div>` : '';
+  const imported = hasSuccess
+    ? `<div class="di-summary-card" style="margin-bottom:10px"><div class="di-summary-k">Imported Tables</div><div class="di-summary-v" style="font-size:13px;font-weight:500">${tables.map(t => escapeHtml(t.tableName || t.name || '')).join(', ')}</div></div>`
     : '';
+  const correctionHints = `
+    <div style="margin-top:8px;font-size:12px;color:var(--text-secondary)">
+      <div style="font-weight:600;margin-bottom:4px">Suggested correction</div>
+      <div>Check file type, delimiter/encoding, and column headers. Then retry import.</div>
+    </div>`;
+  const skipped = errors.length
+    ? `<div class="di-result-bad"><div style="font-size:13px;font-weight:700;margin-bottom:6px">Import Issues</div>${errors.map(e => `<div style="font-size:12px;margin-bottom:4px">${escapeHtml(e.file || e.tableId || 'Unknown')} — ${escapeHtml(e.error || 'Unknown reason')}</div>`).join('')}${correctionHints}</div>`
+    : '';
+  if (!hasSuccess && !errors.length) {
+    host.innerHTML = '<div class="di-result-bad">No tables were imported. Please review input files and try again.</div>';
+    return;
+  }
   host.innerHTML = `${successCard}${imported}${skipped}`;
 }
 
@@ -1016,6 +1090,7 @@ async function uploadStagedFiles() {
     return;
   }
   const btn = document.getElementById('loadBtn');
+  quickStartUsed = false;
   if (btn) {
     btn.disabled = true;
     btn.textContent = 'Importing...';
@@ -1251,17 +1326,11 @@ function renderAnalyticsFlowStepSelect() {
     ${names.length > 1 ? '<input class="input" id="flowTableSearch" placeholder="Search tables" oninput="filterFlowTables(this.value)" style="margin-bottom:10px;max-width:360px" />' : ''}
     <div class="flow-table-grid">
       ${names.map(name => {
-        const t = loadedTables[name] || {};
         const checked = selectedAnalyticsTables.has(name);
         return `<div class="flow-table-item ${checked ? 'active' : ''}" data-flow-table="${escapeHtml(name).toLowerCase()}" onclick="toggleAnalyticsTable('${escapeHtml(name)}')">
           <div class="flow-table-head">
             <input type="checkbox" ${checked ? 'checked' : ''} tabindex="-1" aria-hidden="true" />
             <div class="flow-table-name">${escapeHtml(name)}</div>
-          </div>
-          <div class="flow-meta">
-            <span>${(t.rowCount || 0).toLocaleString()} rows</span>
-            <span>${(t.columns || []).length} columns</span>
-            <span>${escapeHtml(t.source || 'file')}</span>
           </div>
         </div>`;
       }).join('')}
@@ -1299,7 +1368,7 @@ function sqlQuoteIdent(name) {
 async function renderAnalyticsStructureStep() {
   const host = document.getElementById('flowStepStructure');
   if (!host) return;
-  host.innerHTML = '<div class="no-data">Loading structure details...</div>';
+  host.innerHTML = '<div class="no-data">Loading schema details...</div>';
 
   const names = [...selectedAnalyticsTables].filter(n => loadedTables[n]);
   const cards = [];
@@ -1317,38 +1386,17 @@ async function renderAnalyticsStructureStep() {
     } catch (_) {}
 
     const allCols = meta.columns || [];
-    const topCols = allCols.slice(0, 8);
-    const sampleHeaders = topCols.slice(0, 6).map(c => c.name);
     cards.push(`
       <div class="flow-structure-card">
         <div class="flow-table-head" style="margin-bottom:8px">
           <div class="flow-table-name">${escapeHtml(name)}</div>
         </div>
-        <div class="flow-meta" style="margin-bottom:8px">
-          <span>${(meta.rowCount || 0).toLocaleString()} rows</span>
-          <span>${allCols.length} columns</span>
-          <span>${escapeHtml(meta.source || 'file')}</span>
+        <div class="flow-mini-table-wrap" style="margin-top:8px;margin-bottom:8px">
+          <table class="flow-mini-table">
+            <thead><tr><th>Column</th><th>Type</th></tr></thead>
+            <tbody>${allCols.map(c => `<tr><td>${escapeHtml(c.name || '')}</td><td>${escapeHtml(c.type || '')}</td></tr>`).join('') || '<tr><td colspan="2">No columns detected</td></tr>'}</tbody>
+          </table>
         </div>
-        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px">
-          Key columns: ${topCols.map(c => `${escapeHtml(c.name || '')} (${escapeHtml(c.type || '')})`).join(', ') || 'No columns detected'}
-        </div>
-        <details>
-          <summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--brand-primary)">View full structure and sample rows</summary>
-          <div class="flow-mini-table-wrap" style="margin-top:8px;margin-bottom:8px">
-            <table class="flow-mini-table">
-              <thead><tr><th>Column</th><th>Type</th></tr></thead>
-              <tbody>${allCols.map(c => `<tr><td>${escapeHtml(c.name || '')}</td><td>${escapeHtml(c.type || '')}</td></tr>`).join('')}</tbody>
-            </table>
-          </div>
-          <div class="flow-mini-table-wrap">
-            <table class="flow-mini-table">
-              <thead><tr>${sampleHeaders.map(h => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
-              <tbody>
-                ${(sampleRows || []).slice(0, 5).map(r => `<tr>${sampleHeaders.map(h => `<td>${escapeHtml(String(r[h] ?? ''))}</td>`).join('')}</tr>`).join('') || '<tr><td colspan="6">No sample rows</td></tr>'}
-              </tbody>
-            </table>
-          </div>
-        </details>
       </div>
     `);
   }
@@ -1415,7 +1463,7 @@ async function goToRelationStep() {
 async function renderAnalyticsRelationStep(includeAllGlossary = false) {
   const host = document.getElementById('flowStepRelation');
   if (!host) return;
-  host.innerHTML = '<div class="no-data">Detecting relationships and preparing glossary...</div>';
+  host.innerHTML = '<div class="no-data">Loading relationships and glossary...</div>';
 
   const selectedNames = [...selectedAnalyticsTables].filter(n => loadedTables[n]);
   let relData = { joins: [], noRelation: [] };
@@ -1447,7 +1495,7 @@ async function renderAnalyticsRelationStep(includeAllGlossary = false) {
     <div class="flow-rel-grid">
       <div class="flow-rel-box">
         <div style="font-weight:700;margin-bottom:8px">Detected Join Relationships</div>
-        ${singleTableMode ? '<div class="flow-rel-item">Single table mode: relationship setup is skipped.</div>' : ((joins.map(j => `<div class="flow-rel-item">${escapeHtml(j.tableA)}.${escapeHtml(j.columnA)} -> ${escapeHtml(j.tableB)}.${escapeHtml(j.columnB)} <span style="color:var(--text-secondary)">(${Math.round((j.confidence || 0) * 100)}% confidence)</span></div>`).join('')) || '<div class="flow-rel-item">No strong joins detected across selected tables.</div>')}
+        ${singleTableMode ? '<div class="flow-rel-item">Single table mode: relationship setup is skipped.</div>' : ((joins.map(j => `<div class="flow-rel-item">${escapeHtml(j.tableA)}.${escapeHtml(j.columnA)} -> ${escapeHtml(j.tableB)}.${escapeHtml(j.columnB)}</div>`).join('')) || '<div class="flow-rel-item">No join relationships detected across selected tables.</div>')}
       </div>
       <div class="flow-rel-box">
         <div style="font-weight:700;margin-bottom:8px">Common Columns Across Tables</div>
@@ -1470,7 +1518,6 @@ async function renderAnalyticsRelationStep(includeAllGlossary = false) {
 
     <div class="flow-actions">
       <button class="flow-btn-secondary" onclick="goToAnalyticsFlowStep(2)">Back</button>
-      <button class="flow-btn-secondary" onclick="renderAnalyticsRelationStep(true)">Load All Columns</button>
       <button class="flow-btn-secondary" onclick="saveGlossaryFromUI()">Save Glossary</button>
       <button class="submit-btn" onclick="applyAnalyticsSelection()">Continue</button>
     </div>
