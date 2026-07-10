@@ -114,18 +114,42 @@
     <!-- Files panel -->
     <div id="filesPanel">
       <div class="template-bar">
-        <span>Supports CSV, Excel (.xlsx), Parquet, JSON — upload multiple files at once</span>
+        <span>Step 1: Choose file type, then browse files with matching format only</span>
         <span class="template-link" onclick="downloadTemplate()">Download sample CSV</span>
       </div>
+      <div class="card" style="padding:10px 12px;margin-bottom:10px;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--t2);font-weight:600">File Type:</span>
+          <button class="mini-btn" type="button" data-upload-type="csv" onclick="setUploadType('csv')">CSV</button>
+          <button class="mini-btn" type="button" data-upload-type="excel" onclick="setUploadType('excel')">Excel</button>
+          <button class="mini-btn" type="button" data-upload-type="json" onclick="setUploadType('json')">JSON</button>
+          <button class="mini-btn" type="button" data-upload-type="parquet" onclick="setUploadType('parquet')">Parquet</button>
+        </div>
+        <div id="uploadTypeHint" style="font-size:12px;color:var(--t2)">No type selected</div>
+      </div>
+      <div id="excelModePrompt" class="card" style="display:none;padding:10px 12px;margin-bottom:10px">
+        <div style="font-size:12px;font-weight:600;color:var(--t2);margin-bottom:6px">Excel Mode (before file selection)</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="mini-btn" id="excelModeWorkbookBtn" type="button" onclick="setExcelImportMode('workbook')">Workbook (all sheets)</button>
+          <button class="mini-btn" id="excelModeSelectedBtn" type="button" onclick="setExcelImportMode('selected')">Individual sheets</button>
+        </div>
+      </div>
+      <div class="card" style="padding:10px 12px;margin-bottom:10px;display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+        <div style="font-size:12px;color:var(--t2)">Tip: single-file upload stays compact, multi-file upload shows full queue controls.</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="mini-btn" type="button" onclick="openFilePicker()">Add Files</button>
+          <button class="mini-btn" type="button" onclick="clearPendingFiles()">Clear Selection</button>
+        </div>
+      </div>
       <div class="drop-zone" id="dropZone"
-           onclick="document.getElementById('fileInput').click()"
+           onclick="openFilePicker()"
            ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">
         <svg class="drop-icon" viewBox="0 0 36 36" fill="none">
           <rect x="4" y="10" width="28" height="20" rx="3" stroke="currentColor" stroke-width="1.5"/>
           <path d="M18 6v14M13 11l5-5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
-        <div class="drop-title">Drop CSV, Excel, Parquet, or JSON files</div>
-        <div class="drop-sub">Multiple files supported — each sheet in an Excel file becomes a separate table</div>
+        <div class="drop-title">Drop files for selected type</div>
+        <div class="drop-sub">Picker and drop both follow selected format. Excel supports workbook or individual-sheet mode.</div>
         <div class="format-chip-row" aria-label="Supported file formats">
           <span class="format-chip">CSV</span>
           <span class="format-chip">TSV</span>
@@ -136,6 +160,24 @@
         <div class="drop-btn">Choose Files</div>
       </div>
       <input type="file" id="fileInput" accept=".csv,.xlsx,.xls,.xlsm,.parquet,.json,.tsv" multiple style="display:none" onchange="handleFileInputChange(this.files)"/>
+
+      <div id="excelImportSection" class="card" style="display:none;padding:12px;margin-top:10px">
+        <div style="font-size:13px;font-weight:600;color:var(--t2);margin-bottom:8px">Excel Import Mode</div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px">
+          <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--t1)">
+            <input type="radio" name="excelImportMode" value="workbook" checked onchange="setExcelImportMode(this.value)">
+            Workbook (import all sheets)
+          </label>
+          <label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--t1)">
+            <input type="radio" name="excelImportMode" value="selected" onchange="setExcelImportMode(this.value)">
+            Select individual sheets
+          </label>
+        </div>
+        <div id="excelSheetPickerWrap" style="display:none">
+          <div style="font-size:12px;color:var(--t2);margin-bottom:6px">Choose sheets to import per workbook:</div>
+          <div id="excelSheetPicker"></div>
+        </div>
+      </div>
 
       <div id="uploadQueue" class="card upload-queue" style="display:none">
         <div class="queue-head">Upload Queue</div>

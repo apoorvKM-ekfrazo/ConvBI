@@ -21,7 +21,7 @@ function buildMulter() {
 }
 
 // ── parse one file and register as DuckDB table(s) ───────────────────────────
-async function parseAndRegister(filePath, originalName, sourceMeta = {}) {
+async function parseAndRegister(filePath, originalName, sourceMeta = {}, opts = {}) {
   const ext  = path.extname(originalName).toLowerCase().replace('.', '');
   const base = path.basename(originalName, path.extname(originalName))
     .replace(/[^a-zA-Z0-9_]/g, '_').replace(/^(\d)/, '_$1');
@@ -41,13 +41,19 @@ async function parseAndRegister(filePath, originalName, sourceMeta = {}) {
   } else if (ext === 'xlsx' || ext === 'xls' || ext === 'xlsm') {
     if (!XLSX) throw new Error('xlsx package not installed. Run: npm install xlsx');
     const wb = XLSX.readFile(filePath);
-    for (const sheetName of wb.SheetNames) {
+    const requestedSheets = Array.isArray(opts.sheetNames) ? opts.sheetNames.map(String) : [];
+    const selectedSheets = requestedSheets.length ? wb.SheetNames.filter(n => requestedSheets.includes(n)) : wb.SheetNames;
+    for (const sheetName of selectedSheets) {
       const ws   = wb.Sheets[sheetName];
       const rows = XLSX.utils.sheet_to_json(ws, { defval: null });
       if (!rows.length) continue;
       const tableName = `${base}_${sheetName}`.replace(/[^a-zA-Z0-9_]/g, '_');
       const r = await cm.registerTable(tableName, rows, { ...meta, sourceLabel: meta.sourceLabel + ` → ${sheetName}` });
       results.push({ ...r, sheetName });
+    }
+
+    if (requestedSheets.length && !results.length) {
+      throw new Error(`No rows found in selected sheets for ${originalName}`);
     }
 
   } else if (ext === 'parquet') {
@@ -114,16 +120,52 @@ function splitCSVLine(line, delimiter = ',') {
 function attachRoutes(app) {
   const upload = buildMulter();
 
+  // POST /api/upload-excel-sheet-names
+  app.post('/api/upload-excel-sheet-names', upload.single('file'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+    const ext = path.extname(req.file.originalname || '').toLowerCase();
+    if (!['.xlsx', '.xls', '.xlsm'].includes(ext)) {
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+      return res.status(400).json({ error: 'Only Excel files are supported for sheet listing.' });
+    }
+
+    try {
+      if (!XLSX) throw new Error('xlsx package not installed. Run: npm install xlsx');
+      const wb = XLSX.readFile(req.file.path);
+      return res.json({ sheetNames: wb.SheetNames || [] });
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    } finally {
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+    }
+  });
+
   // POST /api/upload-files
   app.post('/api/upload-files', upload.array('files'), async (req, res) => {
     if (!req.files || !req.files.length) return res.status(400).json({ error: 'No files uploaded.' });
 
+    let excelSelection = { mode: 'workbook', perFile: [] };
+    try {
+      if (req.body && req.body.excelSelection) {
+        const parsed = JSON.parse(req.body.excelSelection);
+        if (parsed && typeof parsed === 'object') excelSelection = parsed;
+      }
+    } catch (_) {}
+
     const tables  = [];
     const errors  = [];
 
-    for (const file of req.files) {
+    for (let idx = 0; idx < req.files.length; idx++) {
+      const file = req.files[idx];
       try {
-        const registered = await parseAndRegister(file.path, file.originalname);
+        const ext = path.extname(file.originalname || '').toLowerCase();
+        const isExcel = ['.xlsx', '.xls', '.xlsm'].includes(ext);
+        const perFile = Array.isArray(excelSelection.perFile) ? excelSelection.perFile[idx] : null;
+        const sheetNames = isExcel && excelSelection.mode === 'selected' && perFile && Array.isArray(perFile.sheets)
+          ? perFile.sheets
+          : [];
+
+        const registered = await parseAndRegister(file.path, file.originalname, {}, { sheetNames });
         tables.push(...registered);
       } catch (e) {
         errors.push({ file: file.originalname, error: e.message });

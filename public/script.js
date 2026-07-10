@@ -5,6 +5,10 @@ const API = '';           // same origin
 let loadedTables   = {}; // tableName → { rowCount, columns, source, ... }
 let activeTableSet = new Set(); // tables in scope for current question
 let pendingFiles   = []; // staged File objects before upload
+let excelImportMode = 'workbook';
+let excelSheetCatalog = {}; // fileKey -> sheet names discovered from backend
+let excelSelectedSheets = {}; // fileKey -> selected sheet names
+let selectedUploadType = '';
 let voiceMgr       = null; // set by voice-manager.js
 let savedInsights  = JSON.parse(localStorage.getItem('convbi_insights') || '[]');
 let conversationTurns = []; // recent Q/A context for intent decoding
@@ -29,6 +33,13 @@ const WORKFLOW_LABELS = {
 
 // Databricks browser state (legacy compat)
 let dbBrowserState = { catalog: null, schema: null, table: null };
+
+const UPLOAD_TYPE_CONFIG = {
+  csv: { label: 'CSV / TSV', accept: '.csv,.tsv', pattern: /\.(csv|tsv)$/i },
+  excel: { label: 'Excel', accept: '.xlsx,.xls,.xlsm', pattern: /\.(xlsx|xls|xlsm)$/i },
+  json: { label: 'JSON', accept: '.json', pattern: /\.json$/i },
+  parquet: { label: 'Parquet', accept: '.parquet', pattern: /\.parquet$/i }
+};
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(name) {
@@ -131,11 +142,236 @@ function switchSourceTab(name) {
   if (name === 's3') initS3Panel();
 }
 
+function getFileKey(file) {
+  return `${file.name}::${file.size}::${file.lastModified || 0}`;
+}
+
+function isExcelFile(file) {
+  return /\.(xlsx|xls|xlsm)$/i.test(String(file?.name || ''));
+}
+
+function getPendingExcelFiles() {
+  return pendingFiles.filter(isExcelFile);
+}
+
+function updateUploadTypeUI() {
+  document.querySelectorAll('[data-upload-type]').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-upload-type') === selectedUploadType);
+  });
+
+  const hint = document.getElementById('uploadTypeHint');
+  if (hint) {
+    hint.textContent = selectedUploadType
+      ? `Selected: ${UPLOAD_TYPE_CONFIG[selectedUploadType]?.label || selectedUploadType}`
+      : 'No type selected';
+  }
+
+  const excelPrompt = document.getElementById('excelModePrompt');
+  if (excelPrompt) excelPrompt.style.display = selectedUploadType === 'excel' ? '' : 'none';
+
+  const workbookBtn = document.getElementById('excelModeWorkbookBtn');
+  const selectedBtn = document.getElementById('excelModeSelectedBtn');
+  if (workbookBtn) workbookBtn.classList.toggle('active', excelImportMode !== 'selected');
+  if (selectedBtn) selectedBtn.classList.toggle('active', excelImportMode === 'selected');
+}
+
+function setUploadType(type) {
+  if (!UPLOAD_TYPE_CONFIG[type]) return;
+
+  if (selectedUploadType && selectedUploadType !== type && pendingFiles.length) {
+    clearPendingFiles();
+    showSuccess('Selection cleared because file type changed.');
+  }
+
+  selectedUploadType = type;
+  const input = document.getElementById('fileInput');
+  if (input) input.accept = UPLOAD_TYPE_CONFIG[type].accept;
+  updateUploadTypeUI();
+}
+
+function fileMatchesSelectedType(file) {
+  if (!selectedUploadType || !UPLOAD_TYPE_CONFIG[selectedUploadType]) return false;
+  return UPLOAD_TYPE_CONFIG[selectedUploadType].pattern.test(String(file?.name || ''));
+}
+
+function openFilePicker() {
+  if (!selectedUploadType) {
+    showError('Choose a file type first: CSV, Excel, JSON, or Parquet.');
+    return;
+  }
+  const input = document.getElementById('fileInput');
+  if (!input) return;
+  input.accept = UPLOAD_TYPE_CONFIG[selectedUploadType].accept;
+  input.click();
+}
+
+function clearPendingFiles() {
+  pendingFiles = [];
+  excelSheetCatalog = {};
+  excelSelectedSheets = {};
+
+  const queue = document.getElementById('uploadQueue');
+  if (queue) queue.style.display = 'none';
+  const preview = document.getElementById('previewSection');
+  if (preview) preview.style.display = 'none';
+  const excel = document.getElementById('excelImportSection');
+  if (excel) excel.style.display = 'none';
+
+  const loadBtn = document.getElementById('loadBtn');
+  if (loadBtn) {
+    loadBtn.disabled = true;
+    loadBtn.textContent = 'Load files into analytics';
+  }
+
+  const input = document.getElementById('fileInput');
+  if (input) input.value = '';
+}
+
+function removePendingFile(idx) {
+  if (idx < 0 || idx >= pendingFiles.length) return;
+  const file = pendingFiles[idx];
+  pendingFiles.splice(idx, 1);
+  if (file) {
+    const key = getFileKey(file);
+    delete excelSheetCatalog[key];
+    delete excelSelectedSheets[key];
+  }
+  renderUploadQueue();
+  renderPreviewFromPendingFiles();
+  renderExcelImportSection();
+}
+
+function setExcelImportMode(mode) {
+  excelImportMode = mode === 'selected' ? 'selected' : 'workbook';
+  updateUploadTypeUI();
+  renderExcelImportSection();
+}
+
+function toggleExcelSheetSelection(fileKey, sheetName, checked) {
+  const current = new Set(excelSelectedSheets[fileKey] || []);
+  if (checked) current.add(sheetName);
+  else current.delete(sheetName);
+  excelSelectedSheets[fileKey] = [...current];
+}
+
+async function fetchExcelSheetNames(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  const res = await fetch(`${API}/api/upload-excel-sheet-names`, { method: 'POST', body: fd });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `Could not read sheets for ${file.name}`);
+  return Array.isArray(data.sheetNames) ? data.sheetNames : [];
+}
+
+async function ensureExcelSheetCatalog() {
+  const excelFiles = getPendingExcelFiles();
+  for (const file of excelFiles) {
+    const key = getFileKey(file);
+    if (excelSheetCatalog[key]) continue;
+    try {
+      const names = await fetchExcelSheetNames(file);
+      excelSheetCatalog[key] = names;
+      if (!excelSelectedSheets[key]) excelSelectedSheets[key] = [...names];
+    } catch (e) {
+      excelSheetCatalog[key] = [];
+      if (!excelSelectedSheets[key]) excelSelectedSheets[key] = [];
+      showError(e.message);
+    }
+  }
+}
+
+function renderExcelSheetPicker() {
+  const picker = document.getElementById('excelSheetPicker');
+  if (!picker) return;
+  const excelFiles = getPendingExcelFiles();
+
+  picker.innerHTML = excelFiles.map(file => {
+    const key = getFileKey(file);
+    const sheetNames = excelSheetCatalog[key] || [];
+    const selectedSet = new Set(excelSelectedSheets[key] || []);
+    const options = sheetNames.length
+      ? sheetNames.map((sheet, idx) => `
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin:3px 0;color:var(--t1)">
+          <input type="checkbox" data-file-key="${escapeHtml(key)}" data-sheet-name="${escapeHtml(sheet)}" ${selectedSet.has(sheet) ? 'checked' : ''}>
+          <span>${escapeHtml(sheet)}</span>
+        </label>
+      `).join('')
+      : '<div style="font-size:12px;color:var(--t2)">No sheets found for this workbook.</div>';
+
+    return `
+      <div class="card" style="padding:8px 10px;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:600;color:var(--t2);margin-bottom:4px">${escapeHtml(file.name)}</div>
+        ${options}
+      </div>
+    `;
+  }).join('');
+
+  picker.querySelectorAll('input[type="checkbox"][data-file-key][data-sheet-name]').forEach(input => {
+    input.addEventListener('change', e => {
+      const fileKey = e.target.getAttribute('data-file-key') || '';
+      const sheetName = e.target.getAttribute('data-sheet-name') || '';
+      toggleExcelSheetSelection(fileKey, sheetName, e.target.checked);
+    });
+  });
+}
+
+async function renderExcelImportSection() {
+  const section = document.getElementById('excelImportSection');
+  const pickerWrap = document.getElementById('excelSheetPickerWrap');
+  if (!section || !pickerWrap) return;
+
+  const excelFiles = getPendingExcelFiles();
+  if (!excelFiles.length) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = '';
+  const selectedModeInput = document.querySelector('input[name="excelImportMode"][value="selected"]');
+  const workbookModeInput = document.querySelector('input[name="excelImportMode"][value="workbook"]');
+  if (selectedModeInput) selectedModeInput.checked = excelImportMode === 'selected';
+  if (workbookModeInput) workbookModeInput.checked = excelImportMode !== 'selected';
+
+  if (excelImportMode === 'selected') {
+    pickerWrap.style.display = '';
+    await ensureExcelSheetCatalog();
+    renderExcelSheetPicker();
+  } else {
+    pickerWrap.style.display = 'none';
+  }
+}
+
+function renderPreviewFromPendingFiles() {
+  const loadBtn = document.getElementById('loadBtn');
+  if (loadBtn) {
+    loadBtn.disabled = pendingFiles.length === 0;
+    loadBtn.textContent = pendingFiles.length ? `Load ${pendingFiles.length} files into analytics` : 'Load files into analytics';
+  }
+
+  if (!pendingFiles.length) {
+    const preview = document.getElementById('previewSection');
+    if (preview) preview.style.display = 'none';
+    return;
+  }
+
+  const names = pendingFiles.map(f => f.name).join(', ');
+  const last = pendingFiles[pendingFiles.length - 1];
+  if (/\.(csv|tsv)$/i.test(last.name)) {
+    const reader = new FileReader();
+    reader.onload = e => showCSVPreview(e.target.result, last.name);
+    reader.readAsText(last);
+  } else {
+    document.getElementById('previewSection').style.display = '';
+    document.getElementById('previewTable').innerHTML = `<tbody><tr><td colspan="4" style="padding:1rem;color:var(--t2)">${escapeHtml(names)}</td></tr></tbody>`;
+    document.getElementById('rowCount').textContent = pendingFiles.length + ' file(s) staged for upload';
+  }
+}
+
 function renderUploadQueue() {
   const queueWrap = document.getElementById('uploadQueue');
   const queueList = document.getElementById('uploadQueueList');
   if (!queueWrap || !queueList) return;
-  if (!pendingFiles.length) {
+  if (pendingFiles.length <= 1) {
     queueWrap.style.display = 'none';
     return;
   }
@@ -148,6 +384,7 @@ function renderUploadQueue() {
         <span class="upload-name">${escapeHtml(f.name)}</span>
         <span class="upload-size">${(f.size / 1024).toFixed(1)} KB</span>
       </div>
+      <button type="button" class="mini-btn" onclick="removePendingFile(${idx})" style="margin-left:auto">Remove</button>
       <div class="upload-progress"><span id="uploadBar_${idx}" style="width:0%"></span></div>
     </div>
   `).join('');
@@ -454,24 +691,38 @@ function onDrop(e)      { e.preventDefault(); document.getElementById('dropZone'
 
 function handleFileInputChange(files) {
   if (!files || !files.length) return;
-  pendingFiles = Array.from(files);
-  renderUploadQueue();
-  const loadBtn = document.getElementById('loadBtn');
-  if (loadBtn) loadBtn.disabled = false;
-  const names = pendingFiles.map(f => f.name).join(', ');
-  // Show preview for last file
-  const last = pendingFiles[pendingFiles.length - 1];
-  if (/\.(csv|tsv)$/i.test(last.name)) {
-    const reader = new FileReader();
-    reader.onload = e => showCSVPreview(e.target.result, last.name);
-    reader.readAsText(last);
-  } else {
-    // Non-text file — just show file names
-    document.getElementById('previewSection').style.display = '';
-    document.getElementById('previewTable').innerHTML = `<tbody><tr><td colspan="4" style="padding:1rem;color:var(--t2)">${escapeHtml(names)}</td></tr></tbody>`;
-    document.getElementById('rowCount').textContent = pendingFiles.length + ' file(s) staged for upload';
-    document.getElementById('loadBtn').textContent  = 'Load ' + pendingFiles.length + ' files into analytics';
+  if (!selectedUploadType) {
+    showError('Choose a file type first before selecting files.');
+    return;
   }
+
+  const incoming = Array.from(files);
+  const next = incoming.filter(fileMatchesSelectedType);
+  const rejected = incoming.length - next.length;
+  if (rejected > 0) {
+    showError(`${rejected} file(s) ignored. Only ${UPLOAD_TYPE_CONFIG[selectedUploadType].label} files are allowed.`);
+  }
+  if (!next.length) return;
+
+  const existing = new Set(pendingFiles.map(getFileKey));
+  let added = 0;
+  for (const file of next) {
+    const key = getFileKey(file);
+    if (existing.has(key)) continue;
+    pendingFiles.push(file);
+    existing.add(key);
+    added++;
+  }
+  if (!added) {
+    showError('Selected files are already staged.');
+    return;
+  }
+
+  renderUploadQueue();
+  renderPreviewFromPendingFiles();
+  renderExcelImportSection();
+  const input = document.getElementById('fileInput');
+  if (input) input.value = '';
 }
 
 function showCSVPreview(text, filename) {
@@ -505,12 +756,46 @@ async function uploadStagedFiles() {
     showError('Select at least one file before uploading.');
     return;
   }
+  if (!selectedUploadType) {
+    showError('Choose a file type before uploading.');
+    return;
+  }
   const btn = document.getElementById('loadBtn');
   btn.disabled = true; btn.textContent = 'Uploading…';
   setUploadVisualState('uploading');
 
   const fd = new FormData();
   pendingFiles.forEach(f => fd.append('files', f));
+
+  const excelSelection = {
+    mode: excelImportMode,
+    perFile: pendingFiles.map(f => {
+      const key = getFileKey(f);
+      return {
+        name: f.name,
+        size: f.size,
+        sheets: isExcelFile(f)
+          ? (excelImportMode === 'selected' ? (excelSelectedSheets[key] || []) : [])
+          : []
+      };
+    })
+  };
+
+  if (excelImportMode === 'selected') {
+    const excelFiles = getPendingExcelFiles();
+    for (const file of excelFiles) {
+      const key = getFileKey(file);
+      if (!(excelSelectedSheets[key] || []).length) {
+        showError(`Select at least one sheet for ${file.name}.`);
+        btn.disabled = false;
+        btn.textContent = pendingFiles.length ? ('Load ' + pendingFiles.length + ' files into analytics') : 'Load files into analytics';
+        return;
+      }
+    }
+  }
+
+  fd.append('excelSelection', JSON.stringify(excelSelection));
+  fd.append('selectedUploadType', selectedUploadType);
 
   try {
     const res  = await fetch(`${API}/api/upload-files`, { method: 'POST', body: fd });
@@ -519,10 +804,7 @@ async function uploadStagedFiles() {
 
     setUploadVisualState('done');
 
-    pendingFiles = [];
-    document.getElementById('previewSection').style.display = 'none';
-    const q = document.getElementById('uploadQueue');
-    if (q) q.style.display = 'none';
+    clearPendingFiles();
 
     const count = data.tables.length;
     showSuccess(`${count} table${count>1?'s':''} loaded. Continue with table selection workflow.`);
@@ -2171,6 +2453,7 @@ function setupScrollReveal() {
     loadBtn.disabled = true;
     loadBtn.textContent = 'Load files into analytics';
   }
+  updateUploadTypeUI();
   await refreshTableLibrary();
   switchTab(getInitialTabFromUrl());
   setTableLibraryView(tableLibraryView);
