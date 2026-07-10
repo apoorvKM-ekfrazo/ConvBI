@@ -346,6 +346,10 @@ function renderImportResult(data = {}) {
   host.innerHTML = `${successCard}${imported}${skipped}`;
 }
 
+function goToDashboardOverview() {
+  window.location.href = '/dashboard#overview';
+}
+
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(name) {
   const hasData = Object.keys(loadedTables || {}).length > 0;
