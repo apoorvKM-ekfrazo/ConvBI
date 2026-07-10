@@ -14,6 +14,8 @@ let filterMetaByTable = {};
 let activeFiltersByTable = {};
 let currentFilterTable = '';
 let filtersPanelExpanded = false;
+const DENSITY_MODE_KEY = 'convbi_density_mode';
+const STORY_DETAILS_KEY = 'convbi_story_show_details';
 
 const CHART_TYPE_SEQUENCE = ['auto', 'bar', 'hbar', 'line', 'area', 'donut', 'rose', 'scatter'];
 const CHART_PREFS_KEY = 'convbi_chart_type_prefs_v1';
@@ -69,6 +71,9 @@ function showSection(name) {
   toggleFiltersPanel(false);
   document.querySelectorAll('.db-section').forEach(s => s.classList.remove('active'));
   document.getElementById('section-' + sectionName)?.classList.add('active');
+  document.querySelectorAll('.db-section-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-section') === sectionName);
+  });
   document.querySelectorAll('.db-nav-item').forEach(a => {
     a.classList.toggle('active', a.getAttribute('href') === '#' + sectionName);
   });
@@ -1281,6 +1286,13 @@ function refreshChartType(chartId) {
   handleChartTypeChange(chartId, current);
 }
 
+function closeAllChartMenus() {
+  document.querySelectorAll('.db-chart-menu').forEach(menu => menu.setAttribute('hidden', ''));
+  document.querySelectorAll('.db-chart-menu-btn[aria-expanded="true"]').forEach(btn => {
+    btn.setAttribute('aria-expanded', 'false');
+  });
+}
+
 function isWeakSummary(summary = '') {
   const s = String(summary).toLowerCase().trim();
   const genericPhrases = [
@@ -1368,8 +1380,10 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
   const summaryId = `${chartId}_summary`;
   const exportId = `${chartId}_export`;
   const sourceId = `${chartId}_source`;
+  const refreshId = `${chartId}_refresh`;
+  const menuBtnId = `${chartId}_menu_btn`;
+  const menuId = `${chartId}_menu`;
   const convertId = `${chartId}_convert`;
-  const cycleId = `${chartId}_cycle`;
   const noteId = `${chartId}_convert_note`;
   const originalType = String(summaryMeta?.type || option?.series?.[0]?.type || '').toLowerCase();
   const defaultType = _canonicalChartType(originalType);
@@ -1390,12 +1404,17 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
     <div class="db-chart-card-head">
       <div class="db-chart-card-title">${escapeHtml(title)}</div>
       <div class="db-chart-card-actions">
-        <button class="db-chart-cycle-btn" id="${cycleId}" type="button" title="Refresh chart" aria-label="Refresh chart">↺</button>
         <select class="db-chart-type-select" id="${convertId}" aria-label="Convert chart type">
           ${selectOptions}
         </select>
-        <button class="db-chart-export-btn" id="${sourceId}" type="button">Source</button>
-        <button class="db-chart-export-btn" id="${exportId}" type="button">Export Image</button>
+        <div class="db-chart-menu-wrap">
+          <button class="db-chart-menu-btn" id="${menuBtnId}" type="button" aria-haspopup="true" aria-expanded="false">Actions</button>
+          <div class="db-chart-menu" id="${menuId}" hidden>
+            <button class="db-chart-menu-item" id="${refreshId}" type="button">Refresh chart</button>
+            <button class="db-chart-menu-item" id="${sourceId}" type="button">View source</button>
+            <button class="db-chart-menu-item" id="${exportId}" type="button">Export image</button>
+          </div>
+        </div>
       </div>
     </div>
     <div class="db-chart-convert-note" id="${noteId}" aria-live="polite"></div>
@@ -1412,6 +1431,35 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
   const sourceBtn = document.getElementById(sourceId);
   if (sourceBtn) {
     sourceBtn.addEventListener('click', () => openSourceModal(chartId, 'sql'));
+  }
+
+  const refreshBtn = document.getElementById(refreshId);
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => refreshChartType(chartId));
+  }
+
+  const menuBtn = document.getElementById(menuBtnId);
+  const menu = document.getElementById(menuId);
+  if (menuBtn && menu) {
+    menuBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      const open = menu.hasAttribute('hidden');
+      closeAllChartMenus();
+      if (open) {
+        menu.removeAttribute('hidden');
+        menuBtn.setAttribute('aria-expanded', 'true');
+      } else {
+        menu.setAttribute('hidden', '');
+        menuBtn.setAttribute('aria-expanded', 'false');
+      }
+    });
+    menu.addEventListener('click', e => {
+      e.stopPropagation();
+      const target = e.target;
+      if (target && target.classList && target.classList.contains('db-chart-menu-item')) {
+        closeAllChartMenus();
+      }
+    });
   }
 
   const originalSource = _sourceMeta({}, 'auto', option);
@@ -1440,11 +1488,6 @@ function buildChartCard({ container, chartId, title, sub, option, summaryMeta, d
   const convertEl = document.getElementById(convertId);
   if (convertEl) {
     convertEl.addEventListener('change', e => handleChartTypeChange(chartId, String(e.target.value || 'auto')));
-  }
-
-  const cycleEl = document.getElementById(cycleId);
-  if (cycleEl) {
-    cycleEl.addEventListener('click', () => refreshChartType(chartId));
   }
 
   const cid = chartId;
@@ -1513,6 +1556,36 @@ function setupSidebarHoverBehavior() {
 
 function toggleHistory() {
   document.getElementById('historyPanel').classList.toggle('open');
+  const btn = document.getElementById('dbHistoryToggleBtn');
+  if (btn) {
+    const isOpen = document.getElementById('historyPanel')?.classList.contains('open');
+    btn.textContent = isOpen ? 'Close history' : 'History';
+  }
+}
+
+function applyDashboardDensityMode(mode, persist = true) {
+  const next = mode === 'comfortable' ? 'comfortable' : 'compact';
+  document.body.classList.toggle('density-compact', next === 'compact');
+  const btn = document.getElementById('dbDensityToggleBtn');
+  if (btn) btn.textContent = next === 'compact' ? 'Comfortable' : 'Compact';
+  if (persist) localStorage.setItem(DENSITY_MODE_KEY, next);
+}
+
+function toggleDashboardDensityMode() {
+  const isCompact = document.body.classList.contains('density-compact');
+  applyDashboardDensityMode(isCompact ? 'comfortable' : 'compact');
+}
+
+function toggleStoryDetails(forceState) {
+  const card = document.getElementById('storyCard');
+  const btn = document.getElementById('storyToggleBtn');
+  if (!card || !btn) return;
+  const next = typeof forceState === 'boolean'
+    ? forceState
+    : card.classList.contains('story-collapsed');
+  card.classList.toggle('story-collapsed', next);
+  btn.textContent = next ? 'Show details' : 'Hide details';
+  localStorage.setItem(STORY_DETAILS_KEY, next ? 'false' : 'true');
 }
 
 // ── Main load sequence ────────────────────────────────────────────────────────
@@ -1794,7 +1867,7 @@ async function renderKPIStrip(samples) {
   const arrowMap = { up: '▲', down: '▼', flat: '→' };
   const clsMap   = { up: 'kpi-trend-up', down: 'kpi-trend-down', flat: 'kpi-trend-flat' };
 
-  el.innerHTML = topKPIs.slice(0, 5).map(k => `
+  el.innerHTML = topKPIs.slice(0, 4).map(k => `
     <div class="kpi-card" onclick="filterByKPI('${escapeHtml(k.label)}')" title="${escapeHtml(`Source: ${k.table || 'all'}${k._why ? `\nAI reason: ${k._why}` : ''}`)}">
       <div class="kpi-label">${escapeHtml(k.label)}</div>
       <div class="kpi-value">${escapeHtml(k.value)}</div>
@@ -2590,6 +2663,9 @@ window.addEventListener('hashchange', () => {
 setupSidebarHoverBehavior();
 
 document.getElementById('sidebarPinBtn')?.addEventListener('click', toggleSidebar);
+document.getElementById('dbDensityToggleBtn')?.addEventListener('click', toggleDashboardDensityMode);
+document.getElementById('dbHistoryToggleBtn')?.addEventListener('click', toggleHistory);
+document.addEventListener('click', closeAllChartMenus);
 
 // Ctrl+B toggles sidebar (VS Code style)
 document.addEventListener('keydown', e => {
@@ -2612,6 +2688,8 @@ document.addEventListener('keydown', e => {
 filtersPanelExpanded = localStorage.getItem('convbi_filters_expanded') === 'true';
 updateFiltersPanelState();
 refreshFilterChip();
+applyDashboardDensityMode(localStorage.getItem(DENSITY_MODE_KEY) || 'compact', false);
+toggleStoryDetails(localStorage.getItem(STORY_DETAILS_KEY) !== 'true');
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 const initialSection = String(window.location.hash || '').replace('#', '').trim() || 'overview';

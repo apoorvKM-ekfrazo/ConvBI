@@ -226,6 +226,38 @@ body {
 }
 .db-topbar-btn:hover { color: var(--text-primary); border-color: var(--accent-purple); }
 
+.db-section-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px 0;
+  border-bottom: 1px solid var(--border-lite);
+  background: #ffffff;
+}
+
+.db-section-tab {
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all .12s ease;
+}
+
+.db-section-tab:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-purple);
+}
+
+.db-section-tab.active {
+  background: rgba(122,47,143,.12);
+  color: var(--accent-purple);
+  border-color: rgba(122,47,143,.45);
+}
+
 .db-filters-shell {
   margin: 14px 24px 0;
   border: 1px solid var(--border);
@@ -426,7 +458,7 @@ body {
 }
 
 /* ── Sections ─────────────────────────────────── */
-.db-section { display: none; flex: 1; overflow-y: auto; padding: 22px 24px; min-width: 0; }
+.db-section { display: none; flex: 1; overflow-y: auto; overflow-x: hidden; padding: 18px 20px; min-width: 0; }
 .db-section.active { display: block; }
 
 /* ── Cards ────────────────────────────────────── */
@@ -435,8 +467,8 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--r2);
   box-shadow: 0 2px 6px rgba(17,24,39,.06), 0 1px 2px rgba(17,24,39,.04);
-  padding: 24px;
-  margin-bottom: 24px;
+  padding: 18px;
+  margin-bottom: 14px;
   transition: box-shadow .2s ease;
 }
 .db-card:hover { box-shadow: 0 4px 12px rgba(17,24,39,.08), 0 1px 3px rgba(17,24,39,.05); }
@@ -458,20 +490,20 @@ body {
 
 /* ── KPI strip ────────────────────────────────── */
 .kpi-strip {
-  display: flex; gap: 16px; margin-bottom: 24px; overflow-x: auto; padding-bottom: 8px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(122,47,143,.25) transparent;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+  overflow: visible;
+  padding-bottom: 0;
 }
-.kpi-strip::-webkit-scrollbar { height: 6px; }
-.kpi-strip::-webkit-scrollbar-track { background: transparent; }
-.kpi-strip::-webkit-scrollbar-thumb { background: rgba(122,47,143,.25); border-radius: 3px; }
 .kpi-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--r2);
-  padding: 16px 16px 14px;
-  min-width: 180px;
-  flex: 1;
+  padding: 12px 12px 10px;
+  min-width: 0;
+  width: 100%;
   cursor: pointer;
   transition: border-color .2s ease, box-shadow .2s ease, transform .2s ease;
   position: relative;
@@ -585,7 +617,7 @@ body {
   color: var(--accent-purple);
   line-height: 1.3; margin-bottom: 14px;
 }
-.story-narrative { font-size: 14px; line-height: 1.7; color: var(--text-secondary); margin-bottom: 14px; }
+.story-narrative { font-size: 13px; line-height: 1.55; color: var(--text-secondary); margin-bottom: 10px; }
 .story-narrative p { margin-bottom: 10px; }
 .story-alerts { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
 .story-alert {
@@ -611,15 +643,15 @@ body {
 /* ── Chart grid ───────────────────────────────── */
 .db-chart-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
 }
-.charts-full { grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+.charts-full { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
 .db-chart-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--r2);
-  padding: 16px;
+  padding: 12px;
   box-shadow: 0 2px 6px rgba(17,24,39,.06), 0 1px 2px rgba(17,24,39,.04);
   transition: all .2s ease;
   min-width: 0;
@@ -634,7 +666,7 @@ body {
 .db-chart-card-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 .db-chart-card-title {
   font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 3px;
@@ -697,6 +729,56 @@ body {
 .db-chart-export-btn:hover {
   color: var(--text-primary);
   border-color: var(--accent-blue);
+}
+
+.db-chart-menu-wrap {
+  position: relative;
+}
+
+.db-chart-menu-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.db-chart-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  min-width: 142px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: var(--sh-raise);
+  padding: 4px;
+  z-index: 70;
+}
+
+.db-chart-menu[hidden] {
+  display: none;
+}
+
+.db-chart-menu-item {
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-align: left;
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.db-chart-menu-item:hover {
+  border-color: var(--border-lite);
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 .db-chart-convert-note {
   min-height: 14px;
@@ -895,6 +977,64 @@ body {
 .insight-summary { font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
 .insight-ts { font-size: 10px; color: var(--text-muted); margin-top: 8px; }
 
+.db-nav-meta,
+.db-subnav {
+  display: none !important;
+}
+
+.db-filters-shell {
+  margin: 10px 14px 0;
+  padding: 8px 10px;
+}
+
+.db-topbar {
+  padding: 0 14px;
+}
+
+.db-topbar-right {
+  gap: 8px;
+}
+
+.story-card.story-collapsed .story-narrative,
+.story-card.story-collapsed .story-alerts,
+.story-card.story-collapsed .story-attrib {
+  display: none;
+}
+
+body.density-compact .db-topbar {
+  height: 50px;
+}
+
+body.density-compact .db-section {
+  padding: 12px;
+}
+
+body.density-compact .db-section-tabs {
+  padding-top: 8px;
+}
+
+body.density-compact .db-section-tab {
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
+body.density-compact .db-card {
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+body.density-compact .db-chart-inner {
+  height: 228px;
+}
+
+body.density-compact .db-chart-card-sub {
+  margin-bottom: 8px;
+}
+
+body.density-compact .db-filters-shell {
+  margin: 8px 12px 0;
+}
+
 /* ── Scrollbars ───────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -915,4 +1055,9 @@ body {
   .db-filters-head { align-items: flex-start; flex-direction: column; }
   .db-filters-drawer { width: min(100vw, 420px); }
   .db-chart-grid { grid-template-columns: 1fr; }
+  .db-section-tabs {
+    overflow-x: auto;
+    white-space: nowrap;
+    padding: 8px 10px 0;
+  }
 }

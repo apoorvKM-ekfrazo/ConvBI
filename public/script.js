@@ -21,6 +21,8 @@ let analyticsFlowStep = 1;
 let selectedAnalyticsTables = new Set();
 let glossaryMap = {};
 const SIDEBAR_PIN_KEY = 'convbi_sidebar_pinned';
+const DENSITY_MODE_KEY = 'convbi_density_mode';
+const QA_DETAILS_KEY = 'convbi_qa_show_details';
 
 const WORKFLOW_LABELS = {
   6: 'User Asks Business Question',
@@ -112,7 +114,10 @@ function renderWizardStepper() {
 function showWizardStage(step) {
   for (let i = 1; i <= 12; i++) {
     const panel = document.getElementById(`diStage${i}`);
-    if (panel) panel.style.display = i === step ? '' : 'none';
+    if (panel) {
+      panel.style.display = i === step ? '' : 'none';
+      panel.classList.toggle('is-active', i === step);
+    }
   }
 }
 
@@ -412,6 +417,29 @@ function updateLoadedTablesBadge() {
   if (ctx) {
     ctx.textContent = names.length ? `Active tables: ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` +${names.length - 3}` : ''}` : 'Active tables: none';
   }
+}
+
+function applyDensityMode(mode, persist = true) {
+  const next = mode === 'comfortable' ? 'comfortable' : 'compact';
+  document.body.classList.toggle('density-compact', next === 'compact');
+  const btn = document.getElementById('densityToggleBtn');
+  if (btn) btn.textContent = next === 'compact' ? 'Comfortable' : 'Compact';
+  if (persist) localStorage.setItem(DENSITY_MODE_KEY, next);
+}
+
+function toggleDensityMode() {
+  const isCompact = document.body.classList.contains('density-compact');
+  applyDensityMode(isCompact ? 'comfortable' : 'compact');
+}
+
+function toggleQADetails(forceState) {
+  const next = typeof forceState === 'boolean'
+    ? forceState
+    : !document.body.classList.contains('show-qa-advanced');
+  document.body.classList.toggle('show-qa-advanced', next);
+  const btn = document.getElementById('qaDetailsToggleBtn');
+  if (btn) btn.textContent = next ? 'Hide analysis details' : 'Show analysis details';
+  localStorage.setItem(QA_DETAILS_KEY, next ? 'true' : 'false');
 }
 
 function setTableLibraryView(mode) {
@@ -2876,6 +2904,10 @@ function setupScrollReveal() {
   syncRailShellState();
 
   const themeBtn = document.getElementById('themeToggleBtn');
+  const densityBtn = document.getElementById('densityToggleBtn');
+  densityBtn?.addEventListener('click', toggleDensityMode);
+  applyDensityMode(localStorage.getItem(DENSITY_MODE_KEY) || 'compact', false);
+
   themeBtn?.addEventListener('click', () => {
     const nextDark = !document.body.classList.contains('theme-dark');
     document.body.classList.toggle('theme-dark', nextDark);
@@ -2887,6 +2919,8 @@ function setupScrollReveal() {
     document.body.classList.add('theme-dark');
     if (themeBtn) themeBtn.innerHTML = '&#9790;';
   }
+
+  toggleQADetails(localStorage.getItem(QA_DETAILS_KEY) === 'true');
 
   const qaInput = document.getElementById('qaInput');
   qaInput?.addEventListener('input', () => {

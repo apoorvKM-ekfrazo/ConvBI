@@ -75,7 +75,7 @@
         <div class="top-context" id="activeTablesContext">Active tables: none</div>
       </div>
       <div class="top-actions">
-        <input class="top-search" type="search" placeholder="Search table, metric, or question" aria-label="Global search">
+        <button class="top-icon-btn" id="densityToggleBtn" title="Toggle compact mode" aria-label="Toggle compact mode">Compact</button>
         <button class="top-icon-btn" id="themeToggleBtn" title="Toggle light or dark mode" aria-label="Toggle light or dark mode">&#9788;</button>
         <button class="top-user-btn" title="Account" aria-label="Account menu">Analyst</button>
       </div>
@@ -397,6 +397,7 @@
     <div class="section-head">
       <h2>Ask Questions</h2>
       <p>Ask in plain English and review the SQL and confidence path.</p>
+      <button class="mini-btn" id="qaDetailsToggleBtn" type="button" onclick="toggleQADetails()">Show analysis details</button>
     </div>
 
     <!-- Table context selector -->
@@ -420,7 +421,7 @@
       </div>
     </div>
 
-    <div id="workflowRuntime" class="workflow-runtime" aria-live="polite"></div>
+    <div id="workflowRuntime" class="workflow-runtime qa-advanced-only" aria-live="polite"></div>
 
     <div id="messages" class="messages"></div>
     <div id="followupRail" class="card" style="display:none"></div>
@@ -435,7 +436,6 @@
         <textarea id="qaInput" rows="1" placeholder="Ask any question about your data..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();askQuestion();}"></textarea>
         <button class="qa-ask-btn" id="askBtn" onclick="askQuestion()">Send</button>
       </div>
-      <div class="composer-caption">Answers may be inaccurate — check the SQL.</div>
     </div>
   </div>
 

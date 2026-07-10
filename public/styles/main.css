@@ -361,6 +361,7 @@ select {
   padding: 20px;
   width: 100%;
   min-width: 0;
+  overflow-x: hidden;
 }
 
 .section {
@@ -1190,6 +1191,14 @@ th {
   margin: 6px 2px;
 }
 
+.qa-advanced-only {
+  display: none;
+}
+
+body.show-qa-advanced .qa-advanced-only {
+  display: block;
+}
+
 .messages {
   display: grid;
   gap: 10px;
@@ -1373,6 +1382,69 @@ body.theme-dark .composer-bar {
   font-size: 11px;
   color: var(--text-secondary);
   margin: 6px 2px 2px;
+}
+
+.rail-meta,
+.rail-subnav {
+  display: none !important;
+}
+
+.di-guidance {
+  display: none;
+}
+
+.di-stage .di-subtitle {
+  display: none;
+}
+
+.di-stage.is-active .di-subtitle {
+  display: block;
+}
+
+.drop-zone {
+  min-height: 154px;
+}
+
+.di-choice-card {
+  min-height: 126px;
+}
+
+.messages {
+  padding-bottom: 62px;
+}
+
+body.density-compact .top-bar {
+  min-height: 54px;
+  padding: 8px 14px;
+}
+
+body.density-compact .page-content {
+  padding: 12px;
+}
+
+body.density-compact .card {
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+body.density-compact .di-stage {
+  padding: 10px;
+}
+
+body.density-compact .di-title {
+  font-size: 18px;
+}
+
+body.density-compact .di-stepper {
+  grid-template-columns: repeat(12, minmax(84px, 1fr));
+}
+
+body.density-compact .di-actions {
+  margin-top: 10px;
+}
+
+body.density-compact .table-library-head {
+  margin-bottom: 8px;
 }
 
 
