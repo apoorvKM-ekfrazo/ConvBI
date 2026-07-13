@@ -53,33 +53,37 @@ const UPLOAD_TYPE_CONFIG = {
   parquet: { label: 'Parquet', accept: '.parquet', pattern: /\.parquet$/i }
 };
 
-const DI_STEPS = [
-  { id: 1, title: 'Data Source', what: 'Select where your business data lives.', why: 'Source context determines the safest import path and validation checks.', help: 'Pick one source card and continue.' },
-  { id: 2, title: 'File Selection', what: 'Choose data type or connect cloud source.', why: 'Correct source/type avoids parsing and schema errors.', help: 'For files, choose one type. For cloud, connect and load a table.' },
-  { id: 3, title: 'Import Mode', what: 'Select workbook mode or sheet mode for Excel.', why: 'Mode controls whether every sheet or only selected sheets are imported.', help: 'Use sheet mode for targeted imports.' },
-  { id: 4, title: 'Files', what: 'Add one or more files for import.', why: 'Batch import reduces repetitive setup.', help: 'Drag and drop works for the selected file type only.' },
-  { id: 5, title: 'Sheet Selection', what: 'Pick sheets from workbooks when in Sheet Mode.', why: 'Sheet-level control reduces noise in analytics.', help: 'Use search, Select All, and Clear All to work faster.' },
-  { id: 6, title: 'Import Summary', what: 'Review source, files, and mode before import.', why: 'A quick review prevents costly import mistakes.', help: 'Use Back if anything looks incorrect.' },
-  { id: 7, title: 'Import Progress', what: 'Track exactly what the system is doing.', why: 'Transparent progress improves trust and troubleshooting.', help: 'Wait until import finishes and result is shown.' },
-  { id: 8, title: 'Import Result', what: 'Review imported tables and any skipped items.', why: 'This is your decision point between Quick Start and Advanced setup.', help: 'Use Quick Start for faster onboarding or Advanced Setup for deeper review.' },
-  { id: 9, title: 'Table Selection', what: 'Choose tables for analytics scope.', why: 'Scope control improves answer relevance and speed in larger datasets.', help: 'This step is skipped automatically for single-table imports.' },
-  { id: 10, title: 'Table Structure', what: 'Validate schema and sample values.', why: 'Early structure checks prevent downstream query confusion.', help: 'Review key columns and detected types before continuing.' },
-  { id: 11, title: 'Relationships & Glossary', what: 'Review relationships and complete glossary instructions.', why: 'Glossary setup is required for both single and multiple table imports.', help: 'Define business meanings clearly, then continue to Ready.' },
-  { id: 12, title: 'Complete', what: 'Finalize and move to analytics.', why: 'Completing setup ensures reliable dashboard and Q&A flow.', help: 'Proceed to dashboard when ready.' }
+const DI_PHASES = [
+  { id: 1, title: 'Connect', what: 'Choose a source and establish data access.', why: 'Connection context determines the safest ingest path.', help: 'Pick Files, Databricks, or AWS S3.' },
+  { id: 2, title: 'Upload and Validate', what: 'Stage files or cloud tables, preview data, and fix issues inline.', why: 'Combining upload and validation reduces click-heavy navigation.', help: 'Add data, review queue and preview, then import.' },
+  { id: 3, title: 'Import', what: 'Run import pipeline and review outcomes.', why: 'Centralized progress and results improve trust and recovery.', help: 'Use retry when issues appear.' },
+  { id: 4, title: 'Configure', what: 'Apply Quick Start or complete advanced analytics setup.', why: 'Setup ensures dashboard and Q&A quality before unlock.', help: 'Quick Start is fastest; Advanced keeps full enterprise control.' },
+  { id: 5, title: 'Analyze', what: 'Finalize setup and move to dashboard insights.', why: 'This unlocks the full analytics workflow.', help: 'Open dashboard and start asking questions.' }
 ];
+
+function getWorkflowPhaseFromStage(stage) {
+  const s = Number(stage) || 1;
+  if (s <= 1) return 1;
+  if (s >= 2 && s <= 6) return 2;
+  if (s >= 7 && s <= 8) return 3;
+  if (s >= 9 && s <= 11) return 4;
+  return 5;
+}
 
 let wizardStep = 1;
 let wizardCompletedStep = 0;
 let selectedDataSource = '';
 let lastImportResult = null;
 let quickStartUsed = false;
+let suppressSourceAutoAdvance = false;
 
 function maxAllowedWizardStep() {
   return Math.max(1, wizardCompletedStep + 1);
 }
 
 function updateWizardGuidance(stepId) {
-  const def = DI_STEPS.find(s => s.id === stepId) || DI_STEPS[0];
+  const phase = getWorkflowPhaseFromStage(stepId);
+  const def = DI_PHASES.find(s => s.id === phase) || DI_PHASES[0];
   const stepHint = document.getElementById('diStepHint');
   if (stepHint) {
     stepHint.textContent = `${def.what} ${def.help}`;
@@ -96,39 +100,108 @@ function updateWizardGuidance(stepId) {
 function renderWizardStepper() {
   const stepper = document.getElementById('diStepper');
   if (!stepper) return;
-  const loadedNames = Object.keys(loadedTables || {});
-  const hiddenSteps = new Set();
-  if (selectedUploadType && selectedUploadType !== 'excel') {
-    hiddenSteps.add(3);
-    hiddenSteps.add(5);
-  }
-  if (selectedUploadType === 'excel' && excelImportMode !== 'selected') {
-    hiddenSteps.add(5);
-  }
-  if (loadedNames.length === 1) {
-    hiddenSteps.add(9);
-  }
-  if (quickStartUsed) {
-    hiddenSteps.add(9);
-    hiddenSteps.add(10);
-  }
+  const currentPhase = getWorkflowPhaseFromStage(wizardStep);
+  const donePhase = getWorkflowPhaseFromStage(wizardCompletedStep);
 
-  const visibleSteps = DI_STEPS.filter(step => !hiddenSteps.has(step.id));
-  stepper.innerHTML = visibleSteps.map((step, idx) => {
-    const state = step.id < wizardStep ? 'done' : (step.id === wizardStep ? 'current' : 'disabled');
-    const marker = step.id <= wizardCompletedStep ? '✓' : String(idx + 1);
-    return `<div class="di-step-item ${state}" aria-current="${step.id === wizardStep ? 'step' : 'false'}"><div class="n">${marker}</div><div class="t">${escapeHtml(step.title)}</div></div>`;
+  stepper.innerHTML = DI_PHASES.map((phase, idx) => {
+    const state = phase.id < currentPhase ? 'done' : (phase.id === currentPhase ? 'current' : 'disabled');
+    const marker = phase.id <= donePhase ? '✓' : String(idx + 1);
+    return `<div class="di-step-item ${state}" aria-current="${phase.id === currentPhase ? 'step' : 'false'}"><div class="n">${marker}</div><div class="t">${escapeHtml(phase.title)}</div></div>`;
   }).join('');
+}
+
+function updateUnifiedIntakeVisibility() {
+  const isFiles = (selectedDataSource || 'files') === 'files';
+  const showExcelMode = isFiles && selectedUploadType === 'excel';
+  const showFileSelection = isFiles;
+  const showSheetSelection = showExcelMode && excelImportMode === 'selected' && getPendingExcelFiles().length > 0;
+  const showSummary = isFiles && pendingFiles.length > 0;
+
+  const stage3 = document.getElementById('diStage3');
+  const stage4 = document.getElementById('diStage4');
+  const stage5 = document.getElementById('diStage5');
+  const stage6 = document.getElementById('diStage6');
+
+  if (stage3) stage3.style.display = showExcelMode ? '' : 'none';
+  if (stage4) stage4.style.display = showFileSelection ? '' : 'none';
+  if (stage5) stage5.style.display = showSheetSelection ? '' : 'none';
+  if (stage6) stage6.style.display = showSummary ? '' : 'none';
+
+  if (showSummary) renderImportSummary();
 }
 
 function showWizardStage(step) {
   for (let i = 1; i <= 12; i++) {
     const panel = document.getElementById(`diStage${i}`);
-    if (panel) {
-      panel.style.display = i === step ? '' : 'none';
-      panel.classList.toggle('is-active', i === step);
-    }
+    if (!panel) continue;
+    panel.style.display = 'none';
+    panel.classList.remove('is-active');
   }
+
+  if (step <= 1) {
+    const stage1 = document.getElementById('diStage1');
+    if (stage1) {
+      stage1.style.display = '';
+      stage1.classList.add('is-active');
+    }
+    return;
+  }
+
+  if (step >= 2 && step <= 6) {
+    const stage2 = document.getElementById('diStage2');
+    if (stage2) {
+      stage2.style.display = '';
+      stage2.classList.add('is-active');
+    }
+    updateUnifiedIntakeVisibility();
+    return;
+  }
+
+  if (step === 7) {
+    const stage7 = document.getElementById('diStage7');
+    if (stage7) {
+      stage7.style.display = '';
+      stage7.classList.add('is-active');
+    }
+    return;
+  }
+
+  if (step === 8) {
+    const stage8 = document.getElementById('diStage8');
+    if (stage8) {
+      stage8.style.display = '';
+      stage8.classList.add('is-active');
+    }
+    return;
+  }
+
+  if (step >= 9 && step <= 11) {
+    const active = document.getElementById('diStage9');
+    if (active) {
+      active.style.display = '';
+      active.classList.add('is-active');
+    }
+    return;
+  }
+
+  const stage12 = document.getElementById('diStage12');
+  if (stage12) {
+    stage12.style.display = '';
+    stage12.classList.add('is-active');
+  }
+}
+
+function renderConfigureStepTabs() {
+  const host = document.getElementById('configureStepTabs');
+  if (!host) return;
+  const defs = [
+    { id: 1, label: '1. Table Selection' },
+    { id: 2, label: '2. Schema Review' },
+    { id: 3, label: '3. Relationships and Glossary' }
+  ];
+  host.innerHTML = defs.map(d => `
+    <button class="configure-tab ${analyticsFlowStep === d.id ? 'active' : ''}" type="button" onclick="goToAnalyticsFlowStep(${d.id})">${escapeHtml(d.label)}</button>
+  `).join('');
 }
 
 function goToWizardStep(step, opts = {}) {
@@ -143,8 +216,10 @@ function goToWizardStep(step, opts = {}) {
   updateWizardGuidance(wizardStep);
   renderWizardStepper();
 
-  if (wizardStep === 5) renderExcelImportSection();
-  if (wizardStep === 6) renderImportSummary();
+  if (wizardStep >= 2 && wizardStep <= 6) {
+    updateUnifiedIntakeVisibility();
+    renderExcelImportSection();
+  }
   if (wizardStep === 9) goToAnalyticsFlowStep(1);
   if (wizardStep === 10) goToAnalyticsFlowStep(2);
   if (wizardStep === 11) goToAnalyticsFlowStep(3);
@@ -162,6 +237,10 @@ function selectDataSource(source) {
   });
   const btn = document.getElementById('diContinueSourceBtn');
   if (btn) btn.disabled = !selectedDataSource;
+
+  if (!suppressSourceAutoAdvance && wizardStep === 1 && selectedDataSource) {
+    continueFromSource();
+  }
 }
 
 function continueFromSource() {
@@ -185,16 +264,17 @@ function continueFromType() {
   }
   markWizardStepDone(2);
   if (selectedUploadType === 'excel') {
-    goToWizardStep(3, { force: true });
+    goToWizardStep(2, { force: true });
+    showSuccess('Excel detected. Choose Workbook or Selected Sheets mode below.');
     return;
   }
-  goToWizardStep(4, { force: true });
+  goToWizardStep(2, { force: true });
   openFilePicker();
 }
 
 function continueFromExcelMode() {
   markWizardStepDone(3);
-  goToWizardStep(4, { force: true });
+  goToWizardStep(2, { force: true });
   openFilePicker();
 }
 
@@ -205,11 +285,11 @@ function continueFromFileSelection() {
   }
   markWizardStepDone(4);
   if (selectedUploadType === 'excel' && excelImportMode === 'selected') {
-    goToWizardStep(5, { force: true });
+    goToWizardStep(2, { force: true });
     renderExcelImportSection();
     return;
   }
-  goToWizardStep(6, { force: true });
+  goToWizardStep(2, { force: true });
 }
 
 function continueFromExcelSheets() {
@@ -222,17 +302,15 @@ function continueFromExcelSheets() {
     }
   }
   markWizardStepDone(5);
-  goToWizardStep(6, { force: true });
+  goToWizardStep(2, { force: true });
 }
 
 function goBackFromFileSelection() {
-  if (selectedUploadType === 'excel') goToWizardStep(3, { force: true });
-  else goToWizardStep(2, { force: true });
+  goToWizardStep(2, { force: true });
 }
 
 function goBackFromSummary() {
-  if (selectedUploadType === 'excel' && excelImportMode === 'selected') goToWizardStep(5, { force: true });
-  else goToWizardStep(4, { force: true });
+  goToWizardStep(2, { force: true });
 }
 
 function continueFromImportResult() {
@@ -250,15 +328,17 @@ function continueFromImportResult() {
     persistAnalyticsPreferences();
     syncQAAvailability();
     refreshTableContextBar();
-    showSuccess('Single table detected. Table selection skipped. Review structure, then continue to glossary.');
-    goToWizardStep(10, { force: true });
+    showSuccess('Single table detected. Table selection is auto-applied. Continue in Configure for schema and glossary review.');
+    goToWizardStep(9, { force: true });
+    goToAnalyticsFlowStep(2);
     return;
   }
 
   goToWizardStep(9, { force: true });
+  goToAnalyticsFlowStep(1);
 }
 
-function quickStartAfterImport() {
+async function quickStartAfterImport() {
   quickStartUsed = true;
   const names = Object.keys(loadedTables || {});
   if (!names.length) {
@@ -268,21 +348,47 @@ function quickStartAfterImport() {
 
   selectedAnalyticsTables = new Set(names);
   activeTableSet = new Set(selectedAnalyticsTables);
+
+  let joins = [];
+  try {
+    const relRes = await fetch(`${API}/api/detect-relationships`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const relData = relRes.ok ? await relRes.json() : { joins: [] };
+    joins = Array.isArray(relData.joins) ? relData.joins : [];
+  } catch (_) {
+    joins = [];
+  }
+
+  const commons = detectCommonColumns(names);
+  const glossaryCandidates = getGlossaryCandidateColumns(names, joins, commons, false);
+  glossaryCandidates.forEach(key => {
+    if (!glossaryMap[key]) {
+      const parts = key.split('.');
+      const col = parts[1] || parts[0] || key;
+      glossaryMap[key] = `Auto glossary: ${toTitleLabel(col)} (review if needed)`;
+    }
+  });
+
   persistAnalyticsPreferences();
   syncQAAvailability();
   refreshTableContextBar();
+  localStorage.setItem('convbi_tables_updated', Date.now().toString());
 
   markWizardStepDone(8);
   markWizardStepDone(9);
   markWizardStepDone(10);
+  markWizardStepDone(11);
 
   if (names.length === 1) {
-    showSuccess('Quick Start applied. Relationships skipped for single-table mode. Complete glossary to finish setup.');
+    showSuccess('Quick Start applied. Analytics metadata was prepared automatically for single-table mode.');
   } else {
-    showSuccess('Quick Start applied. Review relationships and complete glossary to finish setup.');
+    showSuccess('Quick Start applied. Table scope, relationship hints, and glossary suggestions were generated automatically.');
   }
 
-  goToWizardStep(11, { force: true });
+  goToWizardStep(12, { force: true });
 }
 
 function filterExcelSheets() {
@@ -507,6 +613,8 @@ function switchSourceTab(name) {
     loadDbProfiles(_dbConnMode);
   }
   if (name === 's3') initS3Panel();
+
+  updateUnifiedIntakeVisibility();
 }
 
 function getFileKey(file) {
@@ -556,6 +664,11 @@ function setUploadType(type) {
   const input = document.getElementById('fileInput');
   if (input) input.accept = UPLOAD_TYPE_CONFIG[type].accept;
   updateUploadTypeUI();
+  updateUnifiedIntakeVisibility();
+
+  if (selectedDataSource === 'files' && type !== 'excel' && pendingFiles.length === 0) {
+    openFilePicker();
+  }
 }
 
 function fileMatchesSelectedType(file) {
@@ -597,6 +710,7 @@ function clearPendingFiles() {
 
   const input = document.getElementById('fileInput');
   if (input) input.value = '';
+  updateUnifiedIntakeVisibility();
 }
 
 function removePendingFile(idx) {
@@ -611,12 +725,19 @@ function removePendingFile(idx) {
   renderUploadQueue();
   renderPreviewFromPendingFiles();
   renderExcelImportSection();
+  updateUnifiedIntakeVisibility();
 }
 
 function setExcelImportMode(mode) {
   excelImportMode = mode === 'selected' ? 'selected' : 'workbook';
+  markWizardStepDone(3);
   updateUploadTypeUI();
   renderExcelImportSection();
+  updateUnifiedIntakeVisibility();
+
+  if (selectedDataSource === 'files' && selectedUploadType === 'excel' && pendingFiles.length === 0) {
+    openFilePicker();
+  }
 }
 
 function toggleExcelSheetSelection(fileKey, sheetName, checked) {
@@ -695,6 +816,7 @@ async function renderExcelImportSection() {
   const excelFiles = getPendingExcelFiles();
   if (!excelFiles.length) {
     section.style.display = 'none';
+    updateUnifiedIntakeVisibility();
     return;
   }
 
@@ -711,6 +833,7 @@ async function renderExcelImportSection() {
   } else {
     pickerWrap.style.display = 'none';
   }
+  updateUnifiedIntakeVisibility();
 }
 
 function renderPreviewFromPendingFiles() {
@@ -720,6 +843,7 @@ function renderPreviewFromPendingFiles() {
   if (!pendingFiles.length) {
     const preview = document.getElementById('previewSection');
     if (preview) preview.style.display = 'none';
+    updateUnifiedIntakeVisibility();
     return;
   }
 
@@ -734,6 +858,7 @@ function renderPreviewFromPendingFiles() {
     document.getElementById('previewTable').innerHTML = `<tbody><tr><td colspan="4" style="padding:1rem;color:var(--t2)">${escapeHtml(names)}</td></tr></tbody>`;
     document.getElementById('rowCount').textContent = pendingFiles.length + ' file(s) staged for upload';
   }
+  updateUnifiedIntakeVisibility();
 }
 
 function renderUploadQueue() {
@@ -1094,6 +1219,10 @@ function handleFileInputChange(files) {
   renderUploadQueue();
   renderPreviewFromPendingFiles();
   renderExcelImportSection();
+  markWizardStepDone(2);
+  markWizardStepDone(4);
+  renderImportSummary();
+  updateUnifiedIntakeVisibility();
   const input = document.getElementById('fileInput');
   if (input) input.value = '';
 }
@@ -1321,6 +1450,7 @@ function goToAnalyticsFlowStep(step) {
   showWizardStage(wizardStep);
   renderWizardStepper();
   updateWizardGuidance(wizardStep);
+  renderConfigureStepTabs();
 
   if (analyticsFlowStep === 2) renderAnalyticsStructureStep();
   if (analyticsFlowStep === 3) renderAnalyticsRelationStep();
@@ -1383,7 +1513,7 @@ function renderAnalyticsFlowStepSelect() {
     <div class="flow-actions">
       <button class="flow-btn-secondary" onclick="selectAllAnalyticsTables()">Select All</button>
       <button class="flow-btn-secondary" onclick="clearAnalyticsTableSelection()">Clear</button>
-      <button class="submit-btn" onclick="goToStructureStep()">Continue</button>
+      <button class="submit-btn" onclick="goToStructureStep()">Save and Open Schema Review</button>
     </div>
   `;
 }
@@ -1446,7 +1576,7 @@ async function renderAnalyticsStructureStep() {
     `);
   }
 
-  host.innerHTML = `${cards.join('')}<div class="flow-actions"><button class="flow-btn-secondary" onclick="goToAnalyticsFlowStep(1)">Back</button><button class="submit-btn" onclick="goToRelationStep()">Continue</button></div>`;
+  host.innerHTML = `${cards.join('')}<div class="flow-actions"><button class="flow-btn-secondary" onclick="goToAnalyticsFlowStep(1)">Back to Table Selection</button><button class="submit-btn" onclick="goToRelationStep()">Save and Open Relationships</button></div>`;
 }
 
 function detectCommonColumns(tableNames) {
@@ -1562,9 +1692,9 @@ async function renderAnalyticsRelationStep(includeAllGlossary = false) {
     </div>
 
     <div class="flow-actions">
-      <button class="flow-btn-secondary" onclick="goToAnalyticsFlowStep(2)">Back</button>
+      <button class="flow-btn-secondary" onclick="goToAnalyticsFlowStep(2)">Back to Schema Review</button>
       <button class="flow-btn-secondary" onclick="saveGlossaryFromUI()">Save Glossary</button>
-      <button class="submit-btn" onclick="applyAnalyticsSelection()">Continue</button>
+      <button class="submit-btn" onclick="applyAnalyticsSelection()">Apply Setup and Continue to Analyze</button>
     </div>
   `;
 }
@@ -1603,6 +1733,7 @@ function renderAnalyticsFlowSection() {
   section.style.display = 'none';
   if (!hasData) return;
 
+  renderConfigureStepTabs();
   renderAnalyticsFlowStepSelect();
   if (wizardStep >= 10) renderAnalyticsStructureStep();
   if (wizardStep >= 11) renderAnalyticsRelationStep();
@@ -3339,8 +3470,10 @@ function setupScrollReveal() {
     loadBtn.textContent = 'Import';
   }
 
+  suppressSourceAutoAdvance = true;
   selectedDataSource = 'files';
   selectDataSource('files');
+  suppressSourceAutoAdvance = false;
   switchSourceTab('files');
   renderWizardStepper();
   updateWizardGuidance(1);

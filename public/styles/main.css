@@ -1896,7 +1896,7 @@ body.density-compact .table-library-head {
 
 .di-stepper {
   display: grid;
-  grid-template-columns: repeat(12, minmax(94px, 1fr));
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
   gap: 8px;
   overflow-x: auto;
   padding-bottom: 4px;
@@ -2068,6 +2068,39 @@ body.theme-dark .di-step-item.done .t {
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.di-legacy-actions {
+  display: none !important;
+}
+
+.configure-step-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.configure-tab {
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.configure-tab.active {
+  border-color: rgba(122, 47, 143, 0.55);
+  color: #5e2377;
+  background: rgba(122, 47, 143, 0.12);
+}
+
+.configure-panel {
+  margin-top: 10px;
 }
 
 .di-summary-grid {

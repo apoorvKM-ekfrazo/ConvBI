@@ -130,8 +130,8 @@
       </div>
 
       <div class="di-stage card" id="diStage2" style="display:none">
-        <h3 class="di-title">Choose File Type</h3>
-        <p class="di-subtitle">Pick one format. The file picker will be filtered to this type.</p>
+        <h3 class="di-title">Upload and Validate</h3>
+        <p class="di-subtitle">Choose source details, stage data, preview, validate, and import from one workspace.</p>
         <div id="filesPanel">
           <div class="di-filetype-grid">
             <button class="di-choice-card" type="button" data-upload-type="csv" onclick="setUploadType('csv')">
@@ -299,14 +299,14 @@
           </div>
         </div>
 
-        <div class="di-actions">
+        <div class="di-actions di-legacy-actions">
           <button class="flow-btn-secondary" type="button" onclick="goToWizardStep(1)">Back</button>
           <button class="submit-btn" id="diContinueTypeBtn" type="button" onclick="continueFromType()" disabled>Continue</button>
         </div>
       </div>
 
       <div class="di-stage card" id="diStage3" style="display:none">
-        <h3 class="di-title">How would you like to import Excel data?</h3>
+        <h3 class="di-title">Excel Options</h3>
         <p class="di-subtitle">Choose between full workbook import or selecting specific sheets.</p>
         <div id="excelModePrompt" class="di-filetype-grid" style="margin-top:6px">
           <button class="di-choice-card" id="excelModeWorkbookBtn" type="button" onclick="setExcelImportMode('workbook')">
@@ -320,14 +320,14 @@
             <div class="di-choice-list">Recommended when only certain sheets are needed.</div>
           </button>
         </div>
-        <div class="di-actions">
+        <div class="di-actions di-legacy-actions">
           <button class="flow-btn-secondary" type="button" onclick="goToWizardStep(2)">Back</button>
           <button class="submit-btn" type="button" onclick="continueFromExcelMode()">Continue</button>
         </div>
       </div>
 
       <div class="di-stage card" id="diStage4" style="display:none">
-        <h3 class="di-title">Select Files</h3>
+        <h3 class="di-title">Upload Workspace</h3>
         <p class="di-subtitle">Choose one or more files, or drag and drop into the upload zone.</p>
 
         <div class="card" style="padding:10px 12px;margin-bottom:10px;display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap">
@@ -364,7 +364,7 @@
           </div>
         </div>
 
-        <div class="di-actions">
+        <div class="di-actions di-legacy-actions">
           <button class="flow-btn-secondary" type="button" onclick="goBackFromFileSelection()">Back</button>
           <button class="submit-btn" id="diContinueFileBtn" type="button" onclick="continueFromFileSelection()" disabled>Continue</button>
         </div>
@@ -386,15 +386,15 @@
             <div id="excelSheetPicker"></div>
           </div>
         </div>
-        <div class="di-actions">
+        <div class="di-actions di-legacy-actions">
           <button class="flow-btn-secondary" type="button" onclick="goToWizardStep(4)">Back</button>
           <button class="submit-btn" type="button" onclick="continueFromExcelSheets()">Continue</button>
         </div>
       </div>
 
       <div class="di-stage card" id="diStage6" style="display:none">
-        <h3 class="di-title">Import Summary</h3>
-        <p class="di-subtitle">Review details before importing.</p>
+        <h3 class="di-title">Validate and Import</h3>
+        <p class="di-subtitle">Review import readiness and start processing.</p>
         <div id="diImportSummary" class="di-summary-grid"></div>
         <div class="di-actions">
           <button class="flow-btn-secondary" type="button" onclick="goBackFromSummary()">Back</button>
@@ -414,8 +414,8 @@
       </div>
 
       <div class="di-stage card" id="diStage8" style="display:none">
-        <h3 class="di-title">Import Result</h3>
-        <p class="di-subtitle">Review import status and choose next step.</p>
+        <h3 class="di-title">Import Results and Setup Mode</h3>
+        <p class="di-subtitle">Review outcomes, then choose Quick Start or Advanced Setup.</p>
         <div id="diImportResult"></div>
         <div class="di-actions">
           <button class="flow-btn-secondary" type="button" onclick="quickStartAfterImport()">Quick Start</button>
@@ -424,21 +424,24 @@
       </div>
 
       <div class="di-stage card" id="diStage9" style="display:none">
-        <h3 class="di-title">Table Selection</h3>
-        <p class="di-subtitle">Select the tables to include in analytics scope.</p>
-        <div id="flowStepSelect" class="flow-panel"></div>
+        <h3 class="di-title">Configure Analytics</h3>
+        <p class="di-subtitle">Use one screen for table scope, schema review, and relationships plus glossary setup.</p>
+        <div id="configureStepTabs" class="configure-step-tabs"></div>
+        <div id="flowStepSelect" class="flow-panel configure-panel"></div>
+        <div id="flowStepStructure" class="flow-panel configure-panel" style="display:none"></div>
+        <div id="flowStepRelation" class="flow-panel configure-panel" style="display:none"></div>
       </div>
 
       <div class="di-stage card" id="diStage10" style="display:none">
-        <h3 class="di-title">Table Structure</h3>
-        <p class="di-subtitle">Validate schema, types, and sample values before analysis.</p>
-        <div id="flowStepStructure" class="flow-panel"></div>
+        <h3 class="di-title">Table Structure (Legacy)</h3>
+        <p class="di-subtitle">This section is preserved for backward compatibility.</p>
+        <div id="flowStepStructureLegacy" class="flow-panel"></div>
       </div>
 
       <div class="di-stage card" id="diStage11" style="display:none">
-        <h3 class="di-title">Relationships &amp; Glossary</h3>
-        <p class="di-subtitle">Configure joins and business meanings for better AI interpretation.</p>
-        <div id="flowStepRelation" class="flow-panel"></div>
+        <h3 class="di-title">Relationships &amp; Glossary (Legacy)</h3>
+        <p class="di-subtitle">This section is preserved for backward compatibility.</p>
+        <div id="flowStepRelationLegacy" class="flow-panel"></div>
       </div>
 
       <div class="di-stage card" id="diStage12" style="display:none">
