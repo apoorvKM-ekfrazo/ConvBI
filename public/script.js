@@ -24,10 +24,136 @@ const SIDEBAR_PIN_KEY = 'convbi_sidebar_pinned';
 const DENSITY_MODE_KEY = 'convbi_density_mode';
 const QA_DETAILS_KEY = 'convbi_qa_show_details';
 const TABLE_LIBRARY_EXPANDED_KEY = 'convbi_table_library_expanded';
+const AI_SELECTION_KEY = 'convbi_ai_selection';
 const NAV_STATE_KEYS = ['tab', 'source', 'flow'];
 let navStateSuspended = false;
 let lastNavStateKey = '';
 let tableLibraryExpanded = localStorage.getItem(TABLE_LIBRARY_EXPANDED_KEY) === 'true';
+let aiOptionsCache = [];
+let aiSelection = { provider: '', model: '', strict: true };
+
+function loadAiSelection() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(AI_SELECTION_KEY) || '{}');
+    aiSelection = {
+      provider: String(parsed.provider || '').trim().toLowerCase(),
+      model: String(parsed.model || '').trim(),
+      strict: parsed.strict !== false
+    };
+  } catch (_) {
+    aiSelection = { provider: '', model: '', strict: true };
+  }
+}
+
+function saveAiSelection() {
+  localStorage.setItem(AI_SELECTION_KEY, JSON.stringify(aiSelection));
+}
+
+function getAiHeaders() {
+  return {
+    'X-AI-Provider': aiSelection.provider || '',
+    'X-AI-Model': aiSelection.model || '',
+    'X-AI-Strict': aiSelection.strict ? 'true' : 'false'
+  };
+}
+
+function aiFailureMessage(message) {
+  const msg = String(message || 'Selected AI model failed. Please switch model and retry.');
+  showError(`${msg} Use AI model selector in top bar and retry.`);
+  const sel = document.getElementById('aiModelSelect');
+  if (sel) {
+    sel.classList.add('ai-model-attention');
+    setTimeout(() => sel.classList.remove('ai-model-attention'), 2500);
+  }
+}
+
+function updateAiModelStatus(text) {
+  const status = document.getElementById('aiModelStatus');
+  if (status) status.textContent = text;
+}
+
+function aiOptionValue(provider, model) {
+  return `${provider}::${model}`;
+}
+
+function aiOptionLabel(provider, model) {
+  return `${provider.toUpperCase()} / ${model}`;
+}
+
+function applyAiSelectorOptions(optionsData) {
+  const sel = document.getElementById('aiModelSelect');
+  if (!sel) return;
+  const providers = Array.isArray(optionsData?.providers) ? optionsData.providers : [];
+  const choices = [];
+  providers.forEach(p => {
+    const provider = String(p.provider || '').trim().toLowerCase();
+    (Array.isArray(p.models) ? p.models : []).forEach(m => {
+      const model = String(m || '').trim();
+      if (!provider || !model) return;
+      choices.push({ provider, model });
+    });
+  });
+
+  if (!choices.length) {
+    sel.innerHTML = '<option value="">AI unavailable</option>';
+    sel.disabled = true;
+    updateAiModelStatus('AI: unavailable');
+    return;
+  }
+
+  const defaults = optionsData?.defaultSelection || {};
+  const defaultProvider = String(defaults.provider || choices[0].provider || '').toLowerCase();
+  const defaultModel = String(defaults.model || choices[0].model || '');
+
+  if (!aiSelection.provider || !aiSelection.model) {
+    aiSelection.provider = defaultProvider;
+    aiSelection.model = defaultModel;
+    aiSelection.strict = true;
+    saveAiSelection();
+  }
+
+  const activeKey = aiOptionValue(aiSelection.provider, aiSelection.model);
+  const availableKeys = new Set(choices.map(c => aiOptionValue(c.provider, c.model)));
+  if (!availableKeys.has(activeKey)) {
+    aiSelection.provider = defaultProvider;
+    aiSelection.model = defaultModel;
+    aiSelection.strict = true;
+    saveAiSelection();
+  }
+
+  sel.innerHTML = choices
+    .map(c => `<option value="${aiOptionValue(c.provider, c.model)}">${aiOptionLabel(c.provider, c.model)}</option>`)
+    .join('');
+  sel.value = aiOptionValue(aiSelection.provider, aiSelection.model);
+  sel.disabled = false;
+  updateAiModelStatus(`AI: ${aiSelection.provider.toUpperCase()} / ${aiSelection.model}`);
+}
+
+async function loadAiOptions() {
+  try {
+    const res = await fetch(`${API}/api/ai/options`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load AI options');
+    aiOptionsCache = data.providers || [];
+    applyAiSelectorOptions(data);
+  } catch (e) {
+    aiFailureMessage(e.message);
+    applyAiSelectorOptions({ providers: [] });
+  }
+}
+
+async function aiFetchJson(url, init = {}) {
+  const headers = { ...(init.headers || {}), ...getAiHeaders() };
+  const res = await fetch(url, { ...init, headers });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (String(data.code || '').startsWith('AI_')) aiFailureMessage(data.error || 'AI request failed.');
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.payload = data;
+    throw err;
+  }
+  return data;
+}
 
 const WORKFLOW_LABELS = {
   6: 'User Asks Business Question',
@@ -1242,13 +1368,11 @@ async function loadDynamicQuestionChips() {
     host.innerHTML = '<div class="chip-category"><div class="chip-category-label">Suggested Questions</div><div class="chip-row"><span style="font-size:12px;color:var(--t2)">Generating suggestions from your dataset...</span></div></div>';
 
     const activeTables = activeTableSet.size ? [...activeTableSet] : tableNames;
-    const res = await fetch(`${API}/api/dataset-question-suggestions`, {
+    const data = await aiFetchJson(`${API}/api/dataset-question-suggestions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ activeTables, maxPerCategory: 4 })
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Could not load question suggestions.');
 
     const categories = Array.isArray(data.categories) ? data.categories : [];
     renderDynamicQuestionChips(categories.length ? categories : getDynamicChipFallback());
@@ -1301,7 +1425,7 @@ function buildFollowupSuggestionsFallback(question, decoded, sections) {
 
 async function fetchFollowupSuggestions(question, decoded, sections, rowsPreview) {
   try {
-    const res = await fetch(`${API}/api/followup-suggestions`, {
+    const data = await aiFetchJson(`${API}/api/followup-suggestions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1312,15 +1436,14 @@ async function fetchFollowupSuggestions(question, decoded, sections, rowsPreview
         conversationContext: conversationTurns.slice(-6)
       })
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Could not generate follow-up suggestions.');
     const prompts = Array.isArray(data.suggestions) ? data.suggestions : [];
     if (!prompts.length) {
-      return buildFollowupSuggestionsFallback(question, decoded, sections);
+      aiFailureMessage('Selected AI model returned no follow-up suggestions.');
+      return [];
     }
     return prompts.slice(0, 6);
   } catch (_) {
-    return buildFollowupSuggestionsFallback(question, decoded, sections);
+    return [];
   }
 }
 
@@ -2226,7 +2349,7 @@ async function askQuestion() {
     // 2. Decode intent
     setWorkflowRuntime(7, 'Extracting business goal, KPI, filters, period, and context.');
     updateThinking(thinkingId, 'Step 7/11 · Intent understanding…');
-    const intRes  = await fetch(`${API}/api/decode-intent`, {
+    const intData = await aiFetchJson(`${API}/api/decode-intent`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
         question: q,
@@ -2237,7 +2360,6 @@ async function askQuestion() {
         conversationContext: conversationTurns
       })
     });
-    const intData = intRes.ok ? await intRes.json() : {};
     const decoded = intData.decoded;
 
     if (decoded?.needs_clarification && decoded.clarification_prompt) {
@@ -2252,7 +2374,7 @@ async function askQuestion() {
     let sql = null, sqlError = null;
 
     for (let attempt = 0; attempt < 3; attempt++) {
-      const genRes  = await fetch(`${API}/api/generate-code`, {
+      const genData = await aiFetchJson(`${API}/api/generate-code`, {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({
           question: q, allTableSchemas, relationships: relData,
@@ -2261,7 +2383,6 @@ async function askQuestion() {
           ...(attempt > 0 ? { previousCode: sql, errorMessage: sqlError } : {})
         })
       });
-      const genData = genRes.ok ? await genRes.json() : {};
       sql = genData.code;
       if (!sql) { sqlError = genData.error || 'No SQL generated'; continue; }
 
@@ -2281,11 +2402,10 @@ async function askQuestion() {
       const allRows = execData.rows || [];
       // Cap rows sent to LLM to avoid token overuse — 30 rows is enough to narrate
       const resultForLLM = allRows.length === 1 ? allRows[0] : allRows.slice(0, 30);
-      const narrateRes  = await fetch(`${API}/api/interpret`, {
+      const narrateData = await aiFetchJson(`${API}/api/interpret`, {
         method: 'POST', headers: {'Content-Type':'application/json'},
         body: JSON.stringify({ question: q, decodedIntent: decoded, sql, result: resultForLLM })
       });
-      const narrateData = narrateRes.ok ? await narrateRes.json() : {};
 
       removeThinking(thinkingId);
       // Fallback: if LLM didn't narrate, produce a concise auto-summary instead of raw JSON dump
@@ -2759,7 +2879,7 @@ async function generateExecutiveSummary(cardId) {
   const payload = answerPayloadStore[cardId];
   if (!payload) return showError('Summary data not found for this answer.');
   try {
-    const res = await fetch(`${API}/api/generate-executive-summary`, {
+    const data = await aiFetchJson(`${API}/api/generate-executive-summary`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
         question: payload.question,
@@ -2768,8 +2888,6 @@ async function generateExecutiveSummary(cardId) {
         rowsPreview: payload.rowsPreview
       })
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Executive summary unavailable.');
     appendExecutiveSummaryMessage(payload.question, data.summary || 'No summary generated.');
   } catch (e) {
     showError('Executive summary failed: ' + e.message);
@@ -3662,6 +3780,20 @@ function setupScrollReveal() {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 (async () => {
+  loadAiSelection();
+  await loadAiOptions();
+
+  const aiSel = document.getElementById('aiModelSelect');
+  aiSel?.addEventListener('change', () => {
+    const raw = String(aiSel.value || '');
+    const [provider, model] = raw.split('::');
+    if (!provider || !model) return;
+    aiSelection = { provider, model, strict: true };
+    saveAiSelection();
+    updateAiModelStatus(`AI: ${provider.toUpperCase()} / ${model}`);
+    showSuccess(`AI model changed to ${provider.toUpperCase()} / ${model}`);
+  });
+
   const loadBtn = document.getElementById('loadBtn');
   if (loadBtn) {
     loadBtn.disabled = false;

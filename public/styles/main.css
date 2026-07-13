@@ -1,3 +1,19 @@
+.ai-model-select {
+  min-width: 180px;
+  max-width: 240px;
+}
+
+.ai-model-status {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-model-attention {
+  outline: 2px solid #ef4444;
+  outline-offset: 2px;
+}
 :root {
   --bg-canvas: #FFFFFF;
   --bg-canvas-dark: #0B1120;

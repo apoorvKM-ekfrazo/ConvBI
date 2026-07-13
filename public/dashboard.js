@@ -16,6 +16,127 @@ let currentFilterTable = '';
 let filtersPanelExpanded = false;
 const DENSITY_MODE_KEY = 'convbi_density_mode';
 const STORY_DETAILS_KEY = 'convbi_story_show_details';
+const AI_SELECTION_KEY = 'convbi_ai_selection';
+let aiSelection = { provider: '', model: '', strict: true };
+
+function loadAiSelection() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(AI_SELECTION_KEY) || '{}');
+    aiSelection = {
+      provider: String(parsed.provider || '').trim().toLowerCase(),
+      model: String(parsed.model || '').trim(),
+      strict: parsed.strict !== false
+    };
+  } catch (_) {
+    aiSelection = { provider: '', model: '', strict: true };
+  }
+}
+
+function saveAiSelection() {
+  localStorage.setItem(AI_SELECTION_KEY, JSON.stringify(aiSelection));
+}
+
+function aiHeaders() {
+  return {
+    'X-AI-Provider': aiSelection.provider || '',
+    'X-AI-Model': aiSelection.model || '',
+    'X-AI-Strict': aiSelection.strict ? 'true' : 'false'
+  };
+}
+
+function dbAiFail(message) {
+  const msg = String(message || 'Selected AI model failed. Please switch model and retry.');
+  alert(`${msg}\n\nUse the AI model selector in the top bar and retry.`);
+  const sel = document.getElementById('dbAiModelSelect');
+  if (sel) {
+    sel.classList.add('db-ai-model-attention');
+    setTimeout(() => sel.classList.remove('db-ai-model-attention'), 2500);
+  }
+}
+
+async function aiFetchJson(url, init = {}) {
+  const headers = { ...(init.headers || {}), ...aiHeaders() };
+  const res = await fetch(url, { ...init, headers });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (String(data.code || '').startsWith('AI_')) dbAiFail(data.error);
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.payload = data;
+    throw err;
+  }
+  return data;
+}
+
+function aiValue(provider, model) {
+  return `${provider}::${model}`;
+}
+
+function applyDashboardAiSelection(optionsData) {
+  const sel = document.getElementById('dbAiModelSelect');
+  const status = document.getElementById('dbAiModelStatus');
+  if (!sel || !status) return;
+
+  const providers = Array.isArray(optionsData?.providers) ? optionsData.providers : [];
+  const choices = [];
+  providers.forEach(p => {
+    const provider = String(p.provider || '').trim().toLowerCase();
+    (Array.isArray(p.models) ? p.models : []).forEach(m => {
+      const model = String(m || '').trim();
+      if (!provider || !model) return;
+      choices.push({ provider, model });
+    });
+  });
+
+  if (!choices.length) {
+    sel.innerHTML = '<option value="">AI unavailable</option>';
+    sel.disabled = true;
+    status.textContent = 'AI: unavailable';
+    return;
+  }
+
+  const defaults = optionsData?.defaultSelection || {};
+  const defaultProvider = String(defaults.provider || choices[0].provider || '').toLowerCase();
+  const defaultModel = String(defaults.model || choices[0].model || '');
+  if (!aiSelection.provider || !aiSelection.model) {
+    aiSelection = { provider: defaultProvider, model: defaultModel, strict: true };
+    saveAiSelection();
+  }
+
+  const keys = new Set(choices.map(c => aiValue(c.provider, c.model)));
+  if (!keys.has(aiValue(aiSelection.provider, aiSelection.model))) {
+    aiSelection = { provider: defaultProvider, model: defaultModel, strict: true };
+    saveAiSelection();
+  }
+
+  sel.innerHTML = choices.map(c => `<option value="${aiValue(c.provider, c.model)}">${c.provider.toUpperCase()} / ${c.model}</option>`).join('');
+  sel.value = aiValue(aiSelection.provider, aiSelection.model);
+  sel.disabled = false;
+  status.textContent = `AI: ${aiSelection.provider.toUpperCase()} / ${aiSelection.model}`;
+}
+
+async function initDashboardAiSelection() {
+  loadAiSelection();
+  const sel = document.getElementById('dbAiModelSelect');
+  try {
+    const res = await fetch(`${API}/api/ai/options`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not load AI options');
+    applyDashboardAiSelection(data);
+  } catch (e) {
+    dbAiFail(e.message);
+    applyDashboardAiSelection({ providers: [] });
+  }
+
+  sel?.addEventListener('change', () => {
+    const [provider, model] = String(sel.value || '').split('::');
+    if (!provider || !model) return;
+    aiSelection = { provider, model, strict: true };
+    saveAiSelection();
+    const status = document.getElementById('dbAiModelStatus');
+    if (status) status.textContent = `AI: ${provider.toUpperCase()} / ${model}`;
+    loadDashboard();
+  });
+}
 
 const CHART_TYPE_SEQUENCE = ['auto', 'bar', 'hbar', 'line', 'area', 'donut', 'rose', 'scatter'];
 const CHART_PREFS_KEY = 'convbi_chart_type_prefs_v1';
@@ -237,10 +358,8 @@ async function fetchFilterMetaForTable(tableName) {
   try {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 3500);
-    const res = await fetch(`${API}/api/filter-meta/${encodeURIComponent(tableName)}`, { signal: ctl.signal });
+    const data = await aiFetchJson(`${API}/api/filter-meta/${encodeURIComponent(tableName)}`, { signal: ctl.signal });
     clearTimeout(timer);
-    if (!res.ok) return null;
-    const data = await res.json();
     filterMetaByTable[tableName] = data;
     return data;
   } catch (_) {
@@ -1351,7 +1470,7 @@ async function fillChartSummary(summaryId, meta, option) {
   el.textContent = 'Summarizing...';
 
   try {
-    const res = await fetch(`${API}/api/chart-summary`, {
+    const data = await aiFetchJson(`${API}/api/chart-summary`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1366,9 +1485,6 @@ async function fillChartSummary(summaryId, meta, option) {
         preview: buildChartPreview(option)
       })
     });
-
-    if (!res.ok) throw new Error('summary api failed');
-    const data = await res.json();
     const summary = String(data.summary || '').trim();
     el.textContent = (!summary || isTitleLikeSummary(summary, meta) || isWeakSummary(summary)) ? fallback : summary;
   } catch (_) {
@@ -1588,6 +1704,36 @@ function toggleStoryDetails(forceState) {
   localStorage.setItem(STORY_DETAILS_KEY, next ? 'false' : 'true');
 }
 
+function renderStoryNarrativeHtml(narrativeText, headlineText, alerts) {
+  const cleaned = String(narrativeText || '').replace(/\r/g, '').trim();
+  if (cleaned) {
+    return cleaned
+      .split(/\n\s*\n+/)
+      .map(p => p.trim())
+      .filter(Boolean)
+      .map(p => `<p>${escapeHtml(p)}</p>`)
+      .join('');
+  }
+
+  const alertsText = Array.isArray(alerts)
+    ? alerts
+        .map(a => String(a?.finding || '').trim())
+        .filter(Boolean)
+        .slice(0, 2)
+        .join(' ')
+    : '';
+
+  const fallback = [
+    String(headlineText || '').trim(),
+    alertsText,
+    'Detailed narrative was not returned by the selected AI model. Switch model and refresh to get richer story details.'
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  return `<p>${escapeHtml(fallback)}</p>`;
+}
+
 // ── Main load sequence ────────────────────────────────────────────────────────
 async function loadDashboard() {
   // Dispose old chart instances to avoid memory leaks on refresh
@@ -1719,13 +1865,11 @@ function buildKPIRecommendationPayload(samples) {
 async function fetchAIKPIRecommendations(samples) {
   try {
     const payload = buildKPIRecommendationPayload(samples);
-    const res = await fetch(`${API}/api/recommend-kpis`, {
+    const data = await aiFetchJson(`${API}/api/recommend-kpis`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    if (!res.ok) return [];
-    const data = await res.json();
     return Array.isArray(data?.kpis) ? data.kpis : [];
   } catch (_) {
     return [];
@@ -1898,15 +2042,15 @@ async function generateDataStory(samples, names) {
   }
 
   try {
-    const res  = await fetch(`${API}/api/generate-story`, {
+    const story = await aiFetchJson(`${API}/api/generate-story`, {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ tableSchemas, sampleData })
     });
-    if (!res.ok) throw new Error('Story API failed');
-    const story = await res.json();
 
-    storyH.textContent = story.headline || 'No headline generated';
-    storyN.innerHTML   = (story.narrative||'').split('\n').filter(Boolean).map(p => `<p>${escapeHtml(p)}</p>`).join('');
+    const headline = story.headline || 'No headline generated';
+    storyH.textContent = headline;
+    storyN.innerHTML = renderStoryNarrativeHtml(story.narrative, headline, story.alerts);
+    toggleStoryDetails(false);
 
     const sevClass = { CRITICAL:'story-alert-critical', WARNING:'story-alert-warning', INFO:'story-alert-info' };
     storyA.innerHTML = (story.alerts||[]).map(a => `
@@ -2091,13 +2235,11 @@ async function fetchTopVisualRecommendations(defs = [], limit = 6) {
       }))
     };
 
-    const res = await fetch(`${API}/api/recommend-visuals`, {
+    const data = await aiFetchJson(`${API}/api/recommend-visuals`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    if (!res.ok) return [];
-    const data = await res.json();
     return Array.isArray(data?.visuals) ? data.visuals : [];
   } catch (_) {
     return [];
@@ -2111,12 +2253,12 @@ async function fetchRecommendedSmartCharts(tableNames, maxCharts) {
     try {
       let res = await fetch(`${API}/api/charts/${encodeURIComponent(tableName)}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...aiHeaders() },
         body: JSON.stringify({ filters: buildFiltersPayload(tableName) })
       });
       if (!res.ok) {
         // Backward-compatible fallback for servers that only expose GET /api/charts/:tableName.
-        res = await fetch(`${API}/api/charts/${encodeURIComponent(tableName)}`);
+        res = await fetch(`${API}/api/charts/${encodeURIComponent(tableName)}`, { headers: { ...aiHeaders() } });
       }
       if (!res.ok) return;
       const data = await res.json();
@@ -2689,9 +2831,12 @@ filtersPanelExpanded = localStorage.getItem('convbi_filters_expanded') === 'true
 updateFiltersPanelState();
 refreshFilterChip();
 applyDashboardDensityMode(localStorage.getItem(DENSITY_MODE_KEY) || 'compact', false);
-toggleStoryDetails(localStorage.getItem(STORY_DETAILS_KEY) !== 'true');
+const storyDetailsPref = localStorage.getItem(STORY_DETAILS_KEY);
+toggleStoryDetails(storyDetailsPref === null ? false : storyDetailsPref !== 'true');
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 const initialSection = String(window.location.hash || '').replace('#', '').trim() || 'overview';
 showSection(initialSection);
-loadDashboard();
+initDashboardAiSelection().finally(() => {
+  loadDashboard();
+});

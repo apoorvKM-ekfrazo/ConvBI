@@ -63,6 +63,30 @@ const COMPLEX_MODEL    = process.env.OPENAI_COMPLEX_MODEL || 'gpt-4o';
 const GROQ_MODEL           = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
 const GROQ_COMPLEX_MODEL   = process.env.GROQ_COMPLEX_MODEL || GROQ_MODEL;
 
+function parseCsvList(value = '') {
+  return String(value || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .filter((m, i, arr) => arr.indexOf(m) === i);
+}
+
+const OPENAI_ALLOWED_MODELS = parseCsvList(
+  process.env.OPENAI_ALLOWED_MODELS || [
+    process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+    process.env.OPENAI_FALLBACK_MODEL || 'gpt-4o',
+    process.env.OPENAI_COMPLEX_MODEL || 'gpt-4o'
+  ].join(',')
+);
+
+const GROQ_ALLOWED_MODELS = parseCsvList(
+  process.env.GROQ_ALLOWED_MODELS || [
+    process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
+    process.env.GROQ_COMPLEX_MODEL || process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
+    'llama-3.3-70b-versatile'
+  ].join(',')
+);
+
 // ── Connectors & engine (lazy — graceful if packages not installed yet) ───────
 let cm, fileUpload, databricksConnector, s3Connector;
 try {
@@ -155,21 +179,66 @@ async function requestViaProviderManager({
   top_p = 1,
   seed = 42,
   preferComplex = false,
-  openaiModels = MODEL_CANDIDATES
+  openaiModels = MODEL_CANDIDATES,
+  forcedProvider = null,
+  forcedModel = null,
+  strictSingleProvider = false
 }) {
   const payload = { messages, max_tokens, temperature, top_p, seed };
   const attempted = [];
+  const desiredProvider = String(forcedProvider || '').trim().toLowerCase();
+  const desiredModel = String(forcedModel || '').trim();
 
-  for (const provider of PROVIDER_ORDER) {
+  if (desiredProvider && !['groq', 'openai'].includes(desiredProvider)) {
+    return {
+      ok: false,
+      code: 'AI_PROVIDER_INVALID',
+      error: `Unsupported AI provider "${desiredProvider}".`,
+      attempted
+    };
+  }
+
+  if (desiredProvider === 'openai' && desiredModel && OPENAI_ALLOWED_MODELS.length && !OPENAI_ALLOWED_MODELS.includes(desiredModel)) {
+    return {
+      ok: false,
+      code: 'AI_MODEL_INVALID',
+      error: `Model "${desiredModel}" is not allowed for provider openai.`,
+      attempted
+    };
+  }
+
+  if (desiredProvider === 'groq' && desiredModel && GROQ_ALLOWED_MODELS.length && !GROQ_ALLOWED_MODELS.includes(desiredModel)) {
+    return {
+      ok: false,
+      code: 'AI_MODEL_INVALID',
+      error: `Model "${desiredModel}" is not allowed for provider groq.`,
+      attempted
+    };
+  }
+
+  const providersToTry = desiredProvider
+    ? [desiredProvider]
+    : PROVIDER_ORDER;
+
+  for (const provider of providersToTry) {
     if (!providerAvailable(provider)) {
       attempted.push({ provider, error: 'Provider not configured' });
+      if (strictSingleProvider || desiredProvider) {
+        return {
+          ok: false,
+          code: 'AI_PROVIDER_UNAVAILABLE',
+          error: `Selected provider "${provider}" is not configured.`,
+          attempted
+        };
+      }
       continue;
     }
 
     try {
       if (provider === 'groq') {
         let success = null;
-        for (const model of groqModelCandidates(preferComplex)) {
+        const candidates = desiredModel ? [desiredModel] : groqModelCandidates(preferComplex);
+        for (const model of candidates) {
           const out = await callOpenAICompatible(
             GROQ_ENDPOINT,
             providerHeaders(GROQ_API_KEY),
@@ -182,11 +251,21 @@ async function requestViaProviderManager({
           attempted.push({ provider, model, error: out.error, status: out.status });
         }
         if (success) return success;
+        if (strictSingleProvider || desiredProvider) {
+          return {
+            ok: false,
+            code: 'AI_PROVIDER_FAILED',
+            error: `Selected provider "${provider}" failed to generate a valid response.`,
+            attempted
+          };
+        }
         continue;
       }
 
       if (provider === 'openai') {
-        const models = providerModel('openai', preferComplex, openaiModels) || [];
+        const models = desiredModel
+          ? [desiredModel]
+          : (providerModel('openai', preferComplex, openaiModels) || []);
         let success = null;
         for (const model of models) {
           const out = await callOpenAICompatible(
@@ -198,13 +277,59 @@ async function requestViaProviderManager({
           attempted.push({ provider, model, error: out.error, status: out.status });
         }
         if (success) return success;
+        if (strictSingleProvider || desiredProvider) {
+          return {
+            ok: false,
+            code: 'AI_PROVIDER_FAILED',
+            error: `Selected provider "${provider}" failed to generate a valid response.`,
+            attempted
+          };
+        }
       }
     } catch (e) {
       attempted.push({ provider, error: e.message });
+      if (strictSingleProvider || desiredProvider) {
+        return {
+          ok: false,
+          code: 'AI_PROVIDER_FAILED',
+          error: `Selected provider "${provider}" failed: ${e.message}`,
+          attempted
+        };
+      }
     }
   }
 
-  return { ok: false, attempted };
+  return { ok: false, code: 'AI_PROVIDER_FAILED', attempted, error: 'No AI provider produced a valid response.' };
+}
+
+function parseBoolHeader(value, defaultValue = false) {
+  if (value === undefined || value === null || value === '') return !!defaultValue;
+  const v = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(v)) return true;
+  if (['0', 'false', 'no', 'off'].includes(v)) return false;
+  return !!defaultValue;
+}
+
+function getAiRequestConfig(req) {
+  const provider = String(req?.headers?.['x-ai-provider'] || req?.body?.aiProvider || '').trim().toLowerCase();
+  const model = String(req?.headers?.['x-ai-model'] || req?.body?.aiModel || '').trim();
+  const strict = parseBoolHeader(req?.headers?.['x-ai-strict'] ?? req?.body?.aiStrict, true);
+  return {
+    forcedProvider: provider || null,
+    forcedModel: model || null,
+    strictSingleProvider: strict
+  };
+}
+
+function aiFailureResponse(res, out, fallbackMessage = 'Selected AI provider failed. Please change model and retry.') {
+  const status = out?.code === 'AI_PROVIDER_UNAVAILABLE' || out?.code === 'AI_MODEL_INVALID' || out?.code === 'AI_PROVIDER_INVALID'
+    ? 400
+    : 502;
+  return res.status(status).json({
+    code: out?.code || 'AI_PROVIDER_FAILED',
+    error: out?.error || fallbackMessage,
+    attempted: out?.attempted || []
+  });
 }
 function extractJson(text) {
   if (!text) return null;
@@ -468,6 +593,40 @@ const WORKFLOW_BLUEPRINT = {
 
 // ── /api/ping ─────────────────────────────────────────────────────────────────
 app.get('/api/ping', (req, res) => res.json({ status: 'ok', version: 'v2' }));
+
+app.get('/api/ai/options', (req, res) => {
+  const providers = [];
+  if (GROQ_API_KEY) {
+    providers.push({
+      provider: 'groq',
+      label: 'Groq',
+      models: GROQ_ALLOWED_MODELS,
+      configured: true,
+      defaultModel: GROQ_MODEL
+    });
+  }
+  if (ENABLE_OPENAI && OPENAI_API_KEY) {
+    providers.push({
+      provider: 'openai',
+      label: 'OpenAI',
+      models: OPENAI_ALLOWED_MODELS,
+      configured: true,
+      defaultModel: MODEL_CANDIDATES[0]
+    });
+  }
+
+  const defaultProvider = providers.find(p => p.provider === PROVIDER_ORDER[0])?.provider || providers[0]?.provider || null;
+  const defaultModel = providers.find(p => p.provider === defaultProvider)?.defaultModel || null;
+
+  res.json({
+    providers,
+    defaultSelection: {
+      provider: defaultProvider,
+      model: defaultModel,
+      strict: true
+    }
+  });
+});
 
 // ── /api/workflow-blueprint ───────────────────────────────────────────────────
 app.get('/api/workflow-blueprint', (req, res) => {
@@ -796,7 +955,7 @@ function sanitizeSuggestionCategories(rawCategories, cap) {
   return out.length ? out : null;
 }
 
-async function buildAIKPIQuestionCategories(tableInsights, deterministicCategories, cap) {
+async function buildAIKPIQuestionCategories(tableInsights, deterministicCategories, cap, aiConfig = {}) {
   const insightDigest = (tableInsights || []).slice(0, 4).map(t => {
     const bits = [];
     bits.push(`Table: ${t.table}`);
@@ -838,6 +997,7 @@ async function buildAIKPIQuestionCategories(tableInsights, deterministicCategori
   ].join('\n\n');
 
   const out = await requestViaProviderManager({
+    ...aiConfig,
     max_tokens: 900,
     temperature: 0.2,
     top_p: 0.9,
@@ -850,10 +1010,18 @@ async function buildAIKPIQuestionCategories(tableInsights, deterministicCategori
     ]
   });
 
-  if (!out.ok) return null;
+  if (!out.ok) return { error: out };
   const parsed = extractJson(out.text || '');
   const categories = sanitizeSuggestionCategories(parsed?.categories, cap);
-  if (!categories) return null;
+  if (!categories) {
+    return {
+      error: {
+        code: 'AI_PROVIDER_FAILED',
+        error: 'Selected AI model returned invalid question suggestion output.',
+        attempted: out.attempted || []
+      }
+    };
+  }
   return { categories, provider: out.provider, model: out.model };
 }
 
@@ -975,7 +1143,11 @@ app.post('/api/dataset-question-suggestions', async (req, res) => {
       return res.json({ categories: defaultDatasetSuggestions(), source: 'fallback-empty-generated' });
     }
 
-    const aiDesigned = await buildAIKPIQuestionCategories(tableInsights, categories, cap);
+    const aiCfg = getAiRequestConfig(req);
+    const aiDesigned = await buildAIKPIQuestionCategories(tableInsights, categories, cap, aiCfg);
+    if (aiDesigned?.error) {
+      return aiFailureResponse(res, aiDesigned.error, 'Question suggestion generation failed for the selected AI model.');
+    }
     if (aiDesigned?.categories?.length) {
       return res.json({
         categories: aiDesigned.categories,
@@ -985,9 +1157,12 @@ app.post('/api/dataset-question-suggestions', async (req, res) => {
       });
     }
 
-    return res.json({ categories, source: 'insight-data-driven' });
+    return res.status(502).json({
+      code: 'AI_PROVIDER_FAILED',
+      error: 'Selected AI model did not return valid question suggestions.'
+    });
   } catch (e) {
-    res.json({ categories: defaultDatasetSuggestions(), source: 'fallback-error', error: e.message });
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -1317,7 +1492,9 @@ app.post('/api/recommend-kpis', async (req, res) => {
       numericColumns: (Array.isArray(t.numericColumns) ? t.numericColumns : []).slice(0, 24)
     }));
 
+    const aiCfg = getAiRequestConfig(req);
     const aiOut = await requestViaProviderManager({
+      ...aiCfg,
       messages: [
         { role: 'system', content: KPI_RECOMMENDER_SYSTEM },
         { role: 'user', content: JSON.stringify({ tables: compactTables, limit: 5 }, null, 2) }
@@ -1328,9 +1505,7 @@ app.post('/api/recommend-kpis', async (req, res) => {
       seed: 42
     });
 
-    if (!aiOut.ok) {
-      return res.json({ kpis: fallback, mode: 'fallback', attempted: aiOut.attempted || [] });
-    }
+    if (!aiOut.ok) return aiFailureResponse(res, aiOut, 'KPI recommendation failed for the selected AI model.');
 
     const parsed = extractJson(aiOut.text) || {};
     const top = Array.isArray(parsed?.top_kpis) ? parsed.top_kpis : [];
@@ -1395,7 +1570,9 @@ app.post('/api/recommend-visuals', async (req, res) => {
 
     const byQuestionId = new Map(questionPool.map(q => [q.questionId, q]));
     const fallback = deterministicQuestionVisualRecommendations(questionPool, limit);
+    const aiCfg = getAiRequestConfig(req);
     const aiOut = await requestViaProviderManager({
+      ...aiCfg,
       messages: [
         { role: 'system', content: QUESTION_VISUAL_RECOMMENDER_SYSTEM },
         {
@@ -1423,14 +1600,7 @@ app.post('/api/recommend-visuals', async (req, res) => {
       seed: 42
     });
 
-    if (!aiOut.ok) {
-      return res.json({
-        visuals: fallback.map(item => ({ key: item.key, why: item.why, questionId: item.questionId })),
-        internalQuestions: fallback.map(item => ({ questionId: item.questionId, businessQuestion: item.businessQuestion, key: item.key })),
-        mode: 'fallback',
-        attempted: aiOut.attempted || []
-      });
-    }
+    if (!aiOut.ok) return aiFailureResponse(res, aiOut, 'Chart recommendation failed for the selected AI model.');
 
     const parsed = extractJson(aiOut.text) || {};
     const top = Array.isArray(parsed?.top_questions) ? parsed.top_questions : [];
@@ -1731,7 +1901,9 @@ app.get('/api/filter-meta/:tableName', async (req, res) => {
       qualityScore: Number(c.qualityScore || 0)
     }));
 
+    const aiCfg = getAiRequestConfig(req);
     const aiOut = await requestViaProviderManager({
+      ...aiCfg,
       messages: [
         { role: 'system', content: FILTER_RECOMMENDER_SYSTEM },
         { role: 'user', content: JSON.stringify({ tableName, rowCount, limit: 6, candidates: compact }, null, 2) }
@@ -1742,9 +1914,7 @@ app.get('/api/filter-meta/:tableName', async (req, res) => {
       seed: 42
     });
 
-    if (!aiOut.ok) {
-      return res.json({ tableName, rowCount, candidates, filters: fallback, mode: 'fallback', attempted: aiOut.attempted || [] });
-    }
+    if (!aiOut.ok) return aiFailureResponse(res, aiOut, 'Filter recommendation failed for the selected AI model.');
 
     const parsed = extractJson(aiOut.text) || {};
     const top = Array.isArray(parsed?.top_filters) ? parsed.top_filters : [];
@@ -1982,7 +2152,9 @@ app.post('/api/decode-intent', async (req, res) => {
       ? [COMPLEX_MODEL, ...MODEL_CANDIDATES.filter(m => m !== COMPLEX_MODEL)]
       : MODEL_CANDIDATES;
 
+    const aiCfg = getAiRequestConfig(req);
     const out = await requestViaProviderManager({
+      ...aiCfg,
       max_tokens: 800,
       temperature: 0,
       top_p: 1,
@@ -1995,9 +2167,7 @@ app.post('/api/decode-intent', async (req, res) => {
       ]
     });
 
-    if (!out.ok) {
-      return res.status(500).json({ error: 'Could not decode intent.', providerAttempts: out.attempted || [] });
-    }
+    if (!out.ok) return aiFailureResponse(res, out, 'Intent decoding failed for the selected AI model.');
 
     const decoded = extractJson(out.text);
     if (!decoded) return res.json({ decoded: null, error: 'Could not parse intent JSON', provider: out.provider, model: out.model });
@@ -2089,7 +2259,9 @@ app.post('/api/generate-code', async (req, res) => {
       messages.push({ role: 'user', content: `Generate SQL to answer: ${question}` });
     }
 
+    const aiCfg = getAiRequestConfig(req);
     const out = await requestViaProviderManager({
+      ...aiCfg,
       max_tokens: 1800,
       temperature: 0,
       top_p: 1,
@@ -2099,33 +2271,16 @@ app.post('/api/generate-code', async (req, res) => {
       messages: [{ role: 'system', content: sysPrompt }, ...messages]
     });
 
-    if (!out.ok) {
-      const fallbackCode = buildDeterministicSQLFallback(question, schemas || {}, decodedIntent || null);
-      if (fallbackCode) {
-        return res.json({
-          code: fallbackCode,
-          model: 'fallback-local',
-          provider: 'rule-engine',
-          type: 'sql',
-          fallbackReason: 'All providers failed'
-        });
-      }
-      return res.status(500).json({ error: 'Could not generate SQL.', providerAttempts: out.attempted || [] });
-    }
+    if (!out.ok) return aiFailureResponse(res, out, 'SQL generation failed for the selected AI model.');
 
     const code = extractSQLBlock(out.text);
     if (!code) {
-      const fallbackCode = buildDeterministicSQLFallback(question, schemas || {}, decodedIntent || null);
-      if (fallbackCode) {
-        return res.json({
-          code: fallbackCode,
-          model: 'fallback-local',
-          provider: 'rule-engine',
-          type: 'sql',
-          fallbackReason: 'Provider returned non-SQL output'
-        });
-      }
-      return res.json({ code: null, error: 'No SQL block in LLM response', raw: out.text, provider: out.provider, model: out.model });
+      return res.status(502).json({
+        code: 'AI_PROVIDER_FAILED',
+        error: 'Selected AI model returned non-SQL output. Please switch model and retry.',
+        provider: out.provider,
+        model: out.model
+      });
     }
     return res.json({ code, model: out.model, provider: out.provider, type: 'sql' });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2206,7 +2361,9 @@ app.post('/api/interpret', async (req, res) => {
       : '';
     const sqlCtx = (sql || executedCode) ? `\nSQL USED:\n${sql || executedCode}` : '';
 
+    const aiCfg = getAiRequestConfig(req);
     let out = await requestViaProviderManager({
+      ...aiCfg,
       max_tokens: 700,
       temperature: 0.2,
       top_p: 0.9,
@@ -2219,10 +2376,12 @@ app.post('/api/interpret', async (req, res) => {
       ]
     });
 
-    let answer = out.ok ? String(out.text || '') : '';
+    if (!out.ok) return aiFailureResponse(res, out, 'Narration failed for the selected AI model.');
+    let answer = String(out.text || '');
 
     if (out.ok && !hasAllLewSections(answer)) {
       const repair = await requestViaProviderManager({
+        ...aiCfg,
         max_tokens: 700,
         temperature: 0,
         top_p: 1,
@@ -2244,8 +2403,12 @@ app.post('/api/interpret', async (req, res) => {
     }
 
     if (!hasAllLewSections(answer)) {
-      answer = makeLewFallbackNarrative(question, result);
-      return res.json({ answer, model: 'fallback-local', provider: out.ok ? out.provider : 'rule-engine' });
+      return res.status(502).json({
+        code: 'AI_PROVIDER_FAILED',
+        error: 'Selected AI model returned incomplete narrative sections. Please switch model and retry.',
+        provider: out.provider,
+        model: out.model
+      });
     }
 
     answer = renderLewSections(parseLewSectionsText(answer));
@@ -2277,7 +2440,9 @@ app.post('/api/followup-suggestions', async (req, res) => {
       `Conversation Context: ${JSON.stringify((Array.isArray(conversationContext) ? conversationContext : []).slice(-6), null, 2)}`
     ].join('\n\n');
 
+    const aiCfg = getAiRequestConfig(req);
     const out = await requestViaProviderManager({
+      ...aiCfg,
       max_tokens: 260,
       temperature: 0.2,
       top_p: 0.9,
@@ -2304,10 +2469,10 @@ app.post('/api/followup-suggestions', async (req, res) => {
       }
     }
 
-    return res.json({ suggestions: fallbackSuggestions, model: out.ok ? out.model : 'fallback-local' });
+    if (!out.ok) return aiFailureResponse(res, out, 'Follow-up suggestion generation failed for the selected AI model.');
+    return res.status(502).json({ code: 'AI_PROVIDER_FAILED', error: 'Selected AI model returned invalid follow-up suggestions.' });
   } catch (e) {
-    const fallbackSuggestions = buildFollowupSuggestionsFallback(req.body?.question || '', req.body?.sections || {}, req.body?.decodedIntent || {});
-    return res.json({ suggestions: fallbackSuggestions, model: 'fallback-local' });
+    return res.status(500).json({ error: e.message });
   }
 });
 
@@ -2320,7 +2485,9 @@ app.post('/api/generate-executive-summary', async (req, res) => {
     const system = 'You are an executive BI writer. Produce a concise, decision-ready summary in plain text with exactly three parts: Key Finding, Business Impact, Next Best Action. Keep under 140 words.';
     const user = `Question: ${question}\nSections: ${JSON.stringify(sections, null, 2)}\nSQL: ${sql || ''}\nRows Preview: ${JSON.stringify(rowsPreview || [], null, 2)}`;
 
+    const aiCfg = getAiRequestConfig(req);
     const out = await requestViaProviderManager({
+      ...aiCfg,
       max_tokens: 260,
       temperature: 0.2,
       top_p: 0.9,
@@ -2332,17 +2499,10 @@ app.post('/api/generate-executive-summary', async (req, res) => {
         { role: 'user', content: user }
       ]
     });
-    if (out.ok) {
-      const summary = normalizeExecutiveSummary(out.text, sections);
-      if (summary) return res.json({ summary, provider: out.provider, model: out.model });
-    }
-
-    const fallback = normalizeExecutiveSummary([
-      'Key Finding: ' + (sections.directAnswer || sections.summary || 'No direct finding available.'),
-      'Business Impact: ' + (sections.businessImpact || sections.insight || 'Impact could not be determined.'),
-      'Next Best Action: ' + (sections.recommendedAction || 'Validate assumptions, then monitor KPI trend weekly.')
-    ].join('\n'), sections);
-    res.json({ summary: fallback, model: 'fallback-local' });
+    if (!out.ok) return aiFailureResponse(res, out, 'Executive summary generation failed for the selected AI model.');
+    const summary = normalizeExecutiveSummary(out.text, sections);
+    if (summary) return res.json({ summary, provider: out.provider, model: out.model });
+    return res.status(502).json({ code: 'AI_PROVIDER_FAILED', error: 'Selected AI model returned invalid executive summary output.' });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2491,7 +2651,9 @@ ${JSON.stringify(tableSchemas, null, 2)}
 SAMPLE DATA (first 5 rows per table):
 ${JSON.stringify(sampleData || {}, null, 2)}`;
 
+    const aiCfg = getAiRequestConfig(req);
     const out = await requestViaProviderManager({
+      ...aiCfg,
       max_tokens: 900,
       temperature: 0.3,
       top_p: 0.9,
@@ -2501,17 +2663,10 @@ ${JSON.stringify(sampleData || {}, null, 2)}`;
       messages: [{ role: 'user', content: prompt }]
     });
 
-    if (out.ok) {
-      const story = extractJson(out.text);
-      if (story) return res.json({ ...story, provider: out.provider, model: out.model });
-    }
-
-    const fallbackStory = buildFallbackStory(tableSchemas, sampleData || {});
-    return res.json({
-      ...fallbackStory,
-      model: 'fallback-local',
-      fallbackReason: out.ok ? 'Provider returned non-JSON payload' : ((out.attempted || []).map(a => `${a.provider}:${a.error}`).join(' | ') || 'LLM unavailable')
-    });
+    if (!out.ok) return aiFailureResponse(res, out, 'Data story generation failed for the selected AI model.');
+    const story = extractJson(out.text);
+    if (story) return res.json({ ...story, provider: out.provider, model: out.model });
+    return res.status(502).json({ code: 'AI_PROVIDER_FAILED', error: 'Selected AI model returned invalid story JSON.' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2538,7 +2693,9 @@ app.post('/api/chart-summary', async (req, res) => {
 
     const user = `Chart metadata: ${JSON.stringify(chart || {})}\nPreview points: ${JSON.stringify(preview || {})}`;
 
+    const aiCfg = getAiRequestConfig(req);
     const out = await requestViaProviderManager({
+      ...aiCfg,
       max_tokens: 40,
       temperature: 0.2,
       top_p: 0.9,
@@ -2551,12 +2708,10 @@ app.post('/api/chart-summary', async (req, res) => {
       ]
     });
 
-    if (out.ok) {
-      const summary = normalizeChartSummary(out.text, fallback, chart);
-      if (summary) return res.json({ summary, provider: out.provider, model: out.model });
-    }
-
-    return res.json({ summary: normalizeChartSummary('', fallback, chart), model: 'fallback-local' });
+    if (!out.ok) return aiFailureResponse(res, out, 'Chart summary failed for the selected AI model.');
+    const summary = normalizeChartSummary(out.text, fallback, chart);
+    if (summary) return res.json({ summary, provider: out.provider, model: out.model });
+    return res.status(502).json({ code: 'AI_PROVIDER_FAILED', error: 'Selected AI model returned an invalid chart summary.' });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2571,7 +2726,9 @@ app.post('/api/ask', async (req, res) => {
   try {
     const { question, summary } = req.body;
     if (!question || !summary) return res.status(400).json({ error: 'Missing question or summary.' });
+    const aiCfg = getAiRequestConfig(req);
     const out = await requestViaProviderManager({
+      ...aiCfg,
       max_tokens: 1000,
       temperature: 0.2,
       top_p: 0.9,
@@ -2584,7 +2741,7 @@ app.post('/api/ask', async (req, res) => {
       ]
     });
     if (out.ok) return res.json({ answer: out.text, provider: out.provider, model: out.model });
-    return res.status(500).json({ error: 'No model available.', providerAttempts: out.attempted || [] });
+    return aiFailureResponse(res, out, 'Selected AI model could not answer this request.');
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2594,7 +2751,9 @@ app.post('/api/summarize-dataset', async (req, res) => {
     const { schemaProfile, stats, datasetName } = req.body;
     if (!schemaProfile) return res.status(400).json({ error: 'Missing schemaProfile.' });
     const statsCtx = stats ? `\n\nKEY STATISTICS:\n${JSON.stringify(stats, null, 2)}` : '';
+    const aiCfg = getAiRequestConfig(req);
     const out = await requestViaProviderManager({
+      ...aiCfg,
       max_tokens: 220,
       temperature: 0.2,
       top_p: 0.9,
@@ -2607,7 +2766,8 @@ app.post('/api/summarize-dataset', async (req, res) => {
       ]
     });
     if (out.ok && out.text) return res.json({ summary: out.text, provider: out.provider, model: out.model });
-    return res.status(500).json({ error: 'Could not generate summary.' });
+    if (!out.ok) return aiFailureResponse(res, out, 'Dataset summary failed for the selected AI model.');
+    return res.status(502).json({ code: 'AI_PROVIDER_FAILED', error: 'Selected AI model returned empty dataset summary output.' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

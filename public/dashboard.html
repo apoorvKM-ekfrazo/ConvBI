@@ -51,6 +51,10 @@
     <header class="db-topbar">
       <div class="db-breadcrumb" id="breadcrumb">Overview</div>
       <div class="db-topbar-right">
+        <select class="db-topbar-btn db-ai-model-select" id="dbAiModelSelect" aria-label="Choose AI model" title="Choose AI model">
+          <option value="">AI model...</option>
+        </select>
+        <span id="dbAiModelStatus" class="db-updated-time">AI: loading...</span>
         <button class="db-topbar-btn" id="dbDensityToggleBtn" type="button">Compact</button>
         <button class="db-topbar-btn" id="dbHistoryToggleBtn" type="button">History</button>
         <button class="db-topbar-btn" onclick="window.location.href='/?tab=qa'">Ask about this</button>

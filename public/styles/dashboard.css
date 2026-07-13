@@ -1,3 +1,12 @@
+.db-ai-model-select {
+  min-width: 170px;
+  max-width: 230px;
+}
+
+.db-ai-model-attention {
+  outline: 2px solid #ef4444;
+  outline-offset: 2px;
+}
 /* ═══════════════════════════════════════════
   ConvBI Dashboard — Ekfrazo Palette
   Purple: #7A2F8F | Navy: #0F172A
