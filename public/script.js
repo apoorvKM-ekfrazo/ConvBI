@@ -33,8 +33,18 @@ const WORKFLOW_LABELS = {
   11: 'Decision Support'
 };
 
-// Databricks browser state (legacy compat)
+// Databricks browser state
 let dbBrowserState = { catalog: null, schema: null, table: null };
+let _dbConnMode = 'default';
+let _dbDefaultAvailable = false;
+let _dbSavedProfiles = [];
+let _dbSelectedProfileId = '';
+
+let _s3ConnMode = 'default';
+let _s3DefaultAvailable = false;
+let _s3SavedProfiles = [];
+let _s3SelectedProfileId = '';
+let _s3Creds = null;
 
 const UPLOAD_TYPE_CONFIG = {
   csv: { label: 'CSV', accept: '.csv', pattern: /\.csv$/i },
@@ -2546,193 +2556,583 @@ function renderPendingECharts() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// DATABRICKS BROWSER (legacy compat)
+// DATABRICKS BROWSER
 // ══════════════════════════════════════════════════════════════════════════════
 
-async function initDatabricksBrowser() {
-  const dot  = document.getElementById('dbStatusDot');
+function pickConnectionMode(defaultAvailable, savedProfiles, preferred) {
+  const requested = String(preferred || '').trim();
+  if (requested === 'default' && defaultAvailable) return 'default';
+  if (requested === 'saved' && savedProfiles.length) return 'saved';
+  if (requested === 'new') return 'new';
+  if (defaultAvailable) return 'default';
+  if (savedProfiles.length) return 'saved';
+  return 'new';
+}
+
+function profileTimeLabel(ts) {
+  if (!ts) return 'never';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return 'never';
+  return d.toLocaleString();
+}
+
+function setDbStatus(state, message) {
+  const dot = document.getElementById('dbStatusDot');
   const text = document.getElementById('dbStatusText');
   const srcState = document.getElementById('dbSourceState');
-  if (!dot||!text) return;
-  text.textContent = 'Connecting…';
-  if (srcState) srcState.innerHTML = '&#9679; Connecting';
-  try {
-    const r    = await fetch(`${API}/api/databricks/status`);
-    const data = await r.json();
-    if (data.connected) {
-      dot.className  = 'db-dot db-dot-ok';
-      text.textContent = 'Connected to ' + data.hostname;
-      if (srcState) srcState.innerHTML = '&#9650; Connected';
-      loadDbCatalogs();
-    } else {
-      dot.className = 'db-dot db-dot-err';
-      text.textContent = 'Error: ' + (data.error||'Not connected');
-      if (srcState) srcState.innerHTML = '&#9679; Not connected';
-    }
-  } catch (e) {
+  if (!dot || !text || !srcState) return;
+
+  if (state === 'connected') {
+    dot.className = 'db-dot db-dot-ok';
+    srcState.className = 'status-pill status-ok';
+    srcState.textContent = 'Connected';
+  } else if (state === 'checking') {
+    dot.className = 'db-dot db-dot-checking';
+    srcState.className = 'status-pill status-info';
+    srcState.textContent = 'Connecting';
+  } else if (state === 'error') {
     dot.className = 'db-dot db-dot-err';
-    text.textContent = 'Could not reach Databricks API';
-    if (srcState) srcState.innerHTML = '&#9679; Not connected';
+    srcState.className = 'status-pill status-err';
+    srcState.textContent = 'Not connected';
+  } else {
+    dot.className = 'db-dot';
+    srcState.className = 'status-pill status-warn';
+    srcState.textContent = 'Awaiting credentials';
+  }
+
+  text.textContent = message;
+}
+
+function renderDbSavedOptions() {
+  const sel = document.getElementById('dbSavedProfileSel');
+  if (!sel) return;
+  if (!_dbSavedProfiles.length) {
+    sel.innerHTML = '<option value="">No saved connections</option>';
+    sel.value = '';
+    return;
+  }
+  sel.innerHTML = _dbSavedProfiles.map(p => {
+    const host = escapeHtml(p.host || 'host');
+    const label = `${escapeHtml(p.name || 'Saved Databricks')} - ${host} - last used ${escapeHtml(profileTimeLabel(p.lastUsedAt))}`;
+    return `<option value="${escapeHtml(p.id)}">${label}</option>`;
+  }).join('');
+
+  if (!_dbSelectedProfileId || !_dbSavedProfiles.some(p => p.id === _dbSelectedProfileId)) {
+    _dbSelectedProfileId = _dbSavedProfiles[0].id;
+  }
+  sel.value = _dbSelectedProfileId;
+}
+
+function applyDbConnModeUI() {
+  _dbConnMode = pickConnectionMode(_dbDefaultAvailable, _dbSavedProfiles, _dbConnMode);
+
+  const modeSel = document.getElementById('dbConnModeSel');
+  const defaultOpt = modeSel?.querySelector('option[value="default"]');
+  const savedOpt = modeSel?.querySelector('option[value="saved"]');
+  if (defaultOpt) defaultOpt.disabled = !_dbDefaultAvailable;
+  if (savedOpt) savedOpt.disabled = !_dbSavedProfiles.length;
+  if (modeSel) modeSel.value = _dbConnMode;
+
+  const savedWrap = document.getElementById('dbSavedWrap');
+  const envBanner = document.getElementById('dbEnvBanner');
+  const fields = document.getElementById('dbCredFields');
+  const note = document.getElementById('dbCredNote');
+  const useServerBtn = document.getElementById('dbUseServerBtn');
+
+  if (savedWrap) savedWrap.style.display = _dbConnMode === 'saved' ? '' : 'none';
+  if (envBanner) envBanner.style.display = _dbConnMode === 'default' && _dbDefaultAvailable ? 'flex' : 'none';
+  if (fields) fields.style.display = _dbConnMode === 'new' ? '' : 'none';
+  if (note) note.style.display = _dbConnMode === 'new' ? '' : 'none';
+  if (useServerBtn) useServerBtn.style.display = _dbConnMode !== 'default' && _dbDefaultAvailable ? '' : 'none';
+
+  if (_dbConnMode === 'default') {
+    setDbStatus('idle', _dbDefaultAvailable
+      ? 'Backend default Databricks connection selected.'
+      : 'No backend default Databricks credentials available.');
+  } else if (_dbConnMode === 'saved') {
+    setDbStatus('idle', _dbSavedProfiles.length
+      ? 'Select a saved Databricks connection and click Connect.'
+      : 'No saved Databricks connections found.');
+  } else {
+    setDbStatus('idle', 'Enter Host, HTTP Path, and PAT token to connect.');
+  }
+}
+
+async function loadDbProfiles(preferredMode) {
+  try {
+    const res = await fetch('/api/connect/databricks/profiles');
+    if (!res.ok) throw new Error('Could not load Databricks profiles.');
+    const data = await res.json();
+    _dbDefaultAvailable = !!data.defaultAvailable;
+    _dbSavedProfiles = Array.isArray(data.saved) ? data.saved : [];
+    if (!_dbSelectedProfileId && _dbSavedProfiles.length) {
+      _dbSelectedProfileId = _dbSavedProfiles[0].id;
+    }
+    _dbConnMode = pickConnectionMode(_dbDefaultAvailable, _dbSavedProfiles, preferredMode || _dbConnMode);
+    renderDbSavedOptions();
+    applyDbConnModeUI();
+  } catch (_) {
+    _dbDefaultAvailable = false;
+    _dbSavedProfiles = [];
+    _dbConnMode = 'new';
+    renderDbSavedOptions();
+    applyDbConnModeUI();
+  }
+}
+
+function setDbConnMode(mode) {
+  _dbConnMode = mode;
+  applyDbConnModeUI();
+}
+
+function onDbConnModeChange() {
+  const mode = document.getElementById('dbConnModeSel')?.value || 'new';
+  setDbConnMode(mode);
+}
+
+function onDbSavedProfileChange() {
+  _dbSelectedProfileId = document.getElementById('dbSavedProfileSel')?.value || '';
+}
+
+function dbShowManualFields() {
+  setDbConnMode('new');
+}
+
+function dbUseServerConfig() {
+  if (!_dbDefaultAvailable) {
+    showError('Server Databricks config is not available in this environment.');
+    return;
+  }
+  setDbConnMode('default');
+  initDatabricksBrowser();
+}
+
+function getDbManualCreds() {
+  return {
+    host: document.getElementById('dbHost')?.value.trim() || '',
+    token: document.getElementById('dbToken')?.value.trim() || '',
+    httpPath: document.getElementById('dbPath')?.value.trim() || ''
+  };
+}
+
+function resetDbBrowserUI() {
+  dbBrowserState = { catalog: null, schema: null, table: null };
+
+  const schemaList = document.getElementById('dbSchemaList');
+  const tableList = document.getElementById('dbTableList');
+  const previewArea = document.getElementById('dbPreviewArea');
+  const btn = document.getElementById('dbLoadTableBtn');
+
+  if (schemaList) schemaList.innerHTML = '<div class="db-empty">Select a catalog.</div>';
+  if (tableList) tableList.innerHTML = '<div class="db-empty">Select a schema.</div>';
+  if (previewArea) previewArea.innerHTML = '<div class="db-empty">Select a table to preview.</div>';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Select a table to load';
+  }
+}
+
+function getDbConnectionPayload(requireFull = true) {
+  if (_dbConnMode === 'default') {
+    if (!_dbDefaultAvailable && requireFull) throw new Error('Default Databricks credentials are unavailable.');
+    return _dbDefaultAvailable ? { useDefault: true } : null;
+  }
+  if (_dbConnMode === 'saved') {
+    if (!_dbSelectedProfileId && requireFull) throw new Error('Select a saved Databricks connection.');
+    return _dbSelectedProfileId ? { profileId: _dbSelectedProfileId } : null;
+  }
+  const { host, token, httpPath } = getDbManualCreds();
+  if (!host || !token || !httpPath) {
+    if (requireFull) throw new Error('Enter Host, HTTP Path, and PAT token.');
+    return null;
+  }
+  return {
+    host,
+    token,
+    httpPath,
+    profileName: `Databricks ${host.replace(/^https?:\/\//, '')}`
+  };
+}
+
+async function initDatabricksBrowser() {
+  await loadDbProfiles(_dbConnMode);
+
+  const catalogList = document.getElementById('dbCatalogList');
+  if (!catalogList) return;
+
+  resetDbBrowserUI();
+
+  let payload = null;
+  try {
+    payload = getDbConnectionPayload(false);
+  } catch (e) {
+    setDbStatus('idle', e.message);
+    catalogList.innerHTML = `<div class="db-empty">${escapeHtml(e.message)}</div>`;
+    return;
+  }
+
+  if (!payload) {
+    setDbStatus('idle', _dbConnMode === 'new'
+      ? 'Enter Host, HTTP Path, and PAT token to connect.'
+      : 'Select a connection source to continue.');
+    catalogList.innerHTML = '<div class="db-empty">Provide credentials to browse catalogs.</div>';
+    return;
+  }
+
+  setDbStatus('checking', 'Checking Databricks connection...');
+
+  try {
+    const resp = await fetch('/api/connect/databricks/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json();
+
+    if (!resp.ok || !data.connected) {
+      throw new Error(data.error || 'Could not authenticate with Databricks.');
+    }
+
+    if (data.usedProfileId) _dbSelectedProfileId = data.usedProfileId;
+    if (_dbConnMode === 'new') {
+      await loadDbProfiles('new');
+      setDbStatus('connected', 'Connected to Databricks');
+    }
+
+    setDbStatus('connected', 'Connected to ' + (data.host || 'Databricks'));
+    await loadDbCatalogs();
+  } catch (e) {
+    setDbStatus('error', 'Error: ' + (e.message || 'Databricks connection failed'));
+    catalogList.innerHTML = `<div class="db-err">${escapeHtml(e.message || 'Could not connect to Databricks.')}</div>`;
   }
 }
 
 async function loadDbCatalogs() {
   const list = document.getElementById('dbCatalogList');
   if (!list) return;
-  list.innerHTML = '<div class="db-loading">Loading…</div>';
-  const r    = await fetch(`${API}/api/databricks/catalogs`);
-  const data = await r.json();
-  const cats = data.catalogs || [];
-  list.innerHTML = cats.map(c =>
-    `<div class="db-item" onclick="selectDbCatalog('${escapeHtml(c)}')">${escapeHtml(c)}</div>`
-  ).join('') || '<div class="db-loading">No catalogs found</div>';
+  list.innerHTML = '<div class="db-loading">Loading...</div>';
+
+  try {
+    const payload = getDbConnectionPayload(true);
+    const r = await fetch('/api/connect/databricks/browse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Could not load catalogs.');
+    if (data.usedProfileId) _dbSelectedProfileId = data.usedProfileId;
+    const cats = data.catalogs || [];
+
+    list.innerHTML = cats.map(c =>
+      `<div class="db-item" onclick="selectDbCatalog('${escapeHtml(c)}')">${escapeHtml(c)}</div>`
+    ).join('') || '<div class="db-empty">No catalogs found.</div>';
+  } catch (e) {
+    setDbStatus('error', 'Error: ' + (e.message || 'Could not load catalogs'));
+    list.innerHTML = `<div class="db-err">${escapeHtml(e.message || 'Could not load catalogs.')}</div>`;
+  }
 }
 
 async function selectDbCatalog(catalog) {
-  dbBrowserState.catalog = catalog; dbBrowserState.schema = null; dbBrowserState.table = null;
-  document.querySelectorAll('#dbCatalogList .db-item').forEach(el => el.classList.toggle('db-item-active', el.textContent===catalog));
-  document.getElementById('dbSchemaList').innerHTML = '<div class="db-loading">Loading…</div>';
-  document.getElementById('dbTableList').innerHTML  = '';
-  const r    = await fetch(`${API}/api/databricks/schemas`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ catalog }) });
-  const data = await r.json();
-  document.getElementById('dbSchemaList').innerHTML = (data.schemas||[]).map(s =>
-    `<div class="db-item" onclick="selectDbSchema('${escapeHtml(s)}')">${escapeHtml(s)}</div>`
-  ).join('') || '<div class="db-loading">No schemas</div>';
+  dbBrowserState.catalog = catalog;
+  dbBrowserState.schema = null;
+  dbBrowserState.table = null;
+
+  document.querySelectorAll('#dbCatalogList .db-item').forEach(el => el.classList.toggle('db-item-active', el.textContent === catalog));
+
+  const schemaList = document.getElementById('dbSchemaList');
+  const tableList = document.getElementById('dbTableList');
+  const previewArea = document.getElementById('dbPreviewArea');
+  if (schemaList) schemaList.innerHTML = '<div class="db-loading">Loading...</div>';
+  if (tableList) tableList.innerHTML = '<div class="db-empty">Select a schema.</div>';
+  if (previewArea) previewArea.innerHTML = '<div class="db-empty">Select a table to preview.</div>';
+
+  try {
+    const payload = { ...getDbConnectionPayload(true), catalog };
+    const r = await fetch('/api/connect/databricks/browse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Could not load schemas.');
+    if (data.usedProfileId) _dbSelectedProfileId = data.usedProfileId;
+    const schemas = data.schemas || [];
+
+    if (schemaList) {
+      schemaList.innerHTML = schemas.map(s =>
+        `<div class="db-item" onclick="selectDbSchema('${escapeHtml(s)}')">${escapeHtml(s)}</div>`
+      ).join('') || '<div class="db-empty">No schemas found.</div>';
+    }
+  } catch (e) {
+    if (schemaList) schemaList.innerHTML = `<div class="db-err">${escapeHtml(e.message || 'Could not load schemas.')}</div>`;
+  }
 }
 
 async function selectDbSchema(schema) {
-  dbBrowserState.schema = schema; dbBrowserState.table = null;
-  document.querySelectorAll('#dbSchemaList .db-item').forEach(el => el.classList.toggle('db-item-active', el.textContent===schema));
-  document.getElementById('dbTableList').innerHTML = '<div class="db-loading">Loading…</div>';
-  const r    = await fetch(`${API}/api/databricks/tables`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ catalog: dbBrowserState.catalog, schema }) });
-  const data = await r.json();
-  document.getElementById('dbTableList').innerHTML = (data.tables||[]).map(t =>
-    `<div class="db-item" onclick="selectDbTable('${escapeHtml(t.name)}')">${escapeHtml(t.name)}</div>`
-  ).join('') || '<div class="db-loading">No tables</div>';
+  dbBrowserState.schema = schema;
+  dbBrowserState.table = null;
+
+  document.querySelectorAll('#dbSchemaList .db-item').forEach(el => el.classList.toggle('db-item-active', el.textContent === schema));
+
+  const tableList = document.getElementById('dbTableList');
+  const previewArea = document.getElementById('dbPreviewArea');
+  if (tableList) tableList.innerHTML = '<div class="db-loading">Loading...</div>';
+  if (previewArea) previewArea.innerHTML = '<div class="db-empty">Select a table to preview.</div>';
+
+  try {
+    const payload = {
+      ...getDbConnectionPayload(true),
+      catalog: dbBrowserState.catalog,
+      schema
+    };
+    const r = await fetch('/api/connect/databricks/browse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Could not load tables.');
+    if (data.usedProfileId) _dbSelectedProfileId = data.usedProfileId;
+    const tables = data.tables || [];
+
+    if (tableList) {
+      tableList.innerHTML = tables.map(t => {
+        const name = typeof t === 'string' ? t : t.name;
+        return `<div class="db-item" onclick="selectDbTable('${escapeHtml(name)}')">${escapeHtml(name)}</div>`;
+      }).join('') || '<div class="db-empty">No tables found.</div>';
+    }
+  } catch (e) {
+    if (tableList) tableList.innerHTML = `<div class="db-err">${escapeHtml(e.message || 'Could not load tables.')}</div>`;
+  }
 }
 
 async function selectDbTable(table) {
   dbBrowserState.table = table;
-  document.querySelectorAll('#dbTableList .db-item').forEach(el => el.classList.toggle('db-item-active', el.textContent===table));
+  document.querySelectorAll('#dbTableList .db-item').forEach(el => el.classList.toggle('db-item-active', el.textContent === table));
+
   const btn = document.getElementById('dbLoadTableBtn');
-  if (btn) { btn.disabled = false; btn.textContent = `Load "${table}"`; }
-  // Preview
-  const r    = await fetch(`${API}/api/databricks/preview`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ catalog:dbBrowserState.catalog, schema:dbBrowserState.schema, table }) });
-  const data = await r.json();
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = `Load "${table}"`;
+  }
+
   const area = document.getElementById('dbPreviewArea');
-  if (!area || !data.rows) return;
-  const cols = (data.columns||[]).slice(0,8);
-  area.innerHTML = `<table class="preview-t">
-    <thead><tr>${cols.map(c=>`<th>${escapeHtml(c.name)}</th>`).join('')}</tr></thead>
-    <tbody>${(data.rows||[]).slice(0,8).map(r=>`<tr>${cols.map(c=>`<td>${escapeHtml(String(r[c.name]||''))}</td>`).join('')}</tr>`).join('')}</tbody>
-  </table>`;
+  if (!area) return;
+
+  try {
+    const payload = {
+      ...getDbConnectionPayload(true),
+      catalog: dbBrowserState.catalog,
+      schema: dbBrowserState.schema,
+      table
+    };
+    const r = await fetch('/api/connect/databricks/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await r.json();
+    if (!r.ok || !data.rows) throw new Error(data.error || 'Could not load preview.');
+
+    const cols = (data.columns || []).slice(0, 8);
+    area.innerHTML = `<table class="preview-t">
+      <thead><tr>${cols.map(c => `<th>${escapeHtml(c.name)}</th>`).join('')}</tr></thead>
+      <tbody>${(data.rows || []).slice(0, 8).map(row => `<tr>${cols.map(c => `<td>${escapeHtml(String(row[c.name] ?? ''))}</td>`).join('')}</tr>`).join('')}</tbody>
+    </table>`;
+  } catch (e) {
+    area.innerHTML = `<div class="db-err">${escapeHtml(e.message || 'Could not load preview.')}</div>`;
+  }
 }
 
 async function loadDatabricksTable() {
   const { catalog, schema, table } = dbBrowserState;
   if (!table) return;
+
   const btn = document.getElementById('dbLoadTableBtn');
-  btn.disabled = true; btn.textContent = 'Loading…';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Loading...';
+  }
+
   try {
-    const r    = await fetch(`${API}/api/databricks/load-table`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ catalog, schema, table }) });
+    const payload = {
+      ...getDbConnectionPayload(true),
+      catalog,
+      schema,
+      tableIds: [table],
+      limit: 50000
+    };
+    const r = await fetch('/api/connect/databricks/load', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
     const data = await r.json();
-    if (data.rows) {
-      // Register into DuckDB via bulk register endpoint
-      const safeName = table.replace(/[^a-zA-Z0-9_]/g,'_');
-      await fetch(`${API}/api/tables/register`, {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ name: safeName, data: data.rows, sourceMeta: { source:'databricks', sourceLabel:`${catalog}.${schema}.${table}` } })
-      });
-      showSuccess(`Table "${table}" loaded — ${data.rows.length} rows.`);
-      await refreshTableLibrary();
-      markWizardStepDone(7);
-      markWizardStepDone(8);
-      renderImportResult({
-        tables: [{ tableName: safeName, rowCount: data.rows.length }],
-        errors: []
-      });
-      goToWizardStep(8, { force: true });
+    if (!r.ok) throw new Error(data.error || 'Load failed.');
+
+    const tables = data.tables || [];
+    if (!tables.length) {
+      throw new Error(data.errors?.[0]?.error || 'No tables were loaded.');
     }
+
+    if (data.usedProfileId) _dbSelectedProfileId = data.usedProfileId;
+    if (_dbConnMode === 'new') await loadDbProfiles('new');
+
+    const rowCount = Number(tables[0]?.rowCount || 0);
+    showSuccess(`Table "${table}" loaded${rowCount ? ` - ${rowCount} rows.` : '.'}`);
+    await refreshTableLibrary();
+    markWizardStepDone(7);
+    markWizardStepDone(8);
+    renderImportResult({ tables, errors: data.errors || [] });
+    goToWizardStep(8, { force: true });
   } catch (e) {
-    showError('Load error: ' + e.message);
+    showError('Load error: ' + (e.message || 'Databricks table load failed.'));
   } finally {
-    btn.disabled = false; btn.textContent = `Load "${table}"`;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = `Load "${table}"`;
+    }
   }
 }
 
 // ── AWS S3 connector ──────────────────────────────────────────────────────────
 
-// Cached credentials for load calls
-let _s3Creds     = null;
-let _s3EnvCreds  = null;   // credentials that came from server .env
+function renderS3Message(type, html) {
+  const listEl = document.getElementById('s3FileList');
+  if (!listEl) return;
+  const cls = type === 'error' ? 'conn-msg conn-msg-error' : 'conn-msg';
+  listEl.innerHTML = `<div class="${cls}">${html}</div>`;
+}
+
+function renderS3SavedOptions() {
+  const sel = document.getElementById('s3SavedProfileSel');
+  if (!sel) return;
+  if (!_s3SavedProfiles.length) {
+    sel.innerHTML = '<option value="">No saved connections</option>';
+    sel.value = '';
+    return;
+  }
+  sel.innerHTML = _s3SavedProfiles.map(p => {
+    const label = `${escapeHtml(p.name || 'Saved S3')} - ${escapeHtml(p.bucket || 'bucket')} (${escapeHtml(p.region || 'region')}) - last used ${escapeHtml(profileTimeLabel(p.lastUsedAt))}`;
+    return `<option value="${escapeHtml(p.id)}">${label}</option>`;
+  }).join('');
+  if (!_s3SelectedProfileId || !_s3SavedProfiles.some(p => p.id === _s3SelectedProfileId)) {
+    _s3SelectedProfileId = _s3SavedProfiles[0].id;
+  }
+  sel.value = _s3SelectedProfileId;
+}
+
+function applyS3ConnModeUI() {
+  _s3ConnMode = pickConnectionMode(_s3DefaultAvailable, _s3SavedProfiles, _s3ConnMode);
+
+  const modeSel = document.getElementById('s3ConnModeSel');
+  const defaultOpt = modeSel?.querySelector('option[value="default"]');
+  const savedOpt = modeSel?.querySelector('option[value="saved"]');
+  if (defaultOpt) defaultOpt.disabled = !_s3DefaultAvailable;
+  if (savedOpt) savedOpt.disabled = !_s3SavedProfiles.length;
+  if (modeSel) modeSel.value = _s3ConnMode;
+
+  const savedWrap = document.getElementById('s3SavedWrap');
+  const fields = document.getElementById('s3CredFields');
+  const note = document.getElementById('s3CredNote');
+  const banner = document.getElementById('s3EnvBanner');
+  if (savedWrap) savedWrap.style.display = _s3ConnMode === 'saved' ? '' : 'none';
+  if (fields) fields.style.display = _s3ConnMode === 'new' ? '' : 'none';
+  if (note) note.style.display = _s3ConnMode === 'new' ? '' : 'none';
+  if (banner) banner.style.display = _s3ConnMode === 'default' && _s3DefaultAvailable ? 'flex' : 'none';
+}
+
+async function loadS3Profiles(preferredMode) {
+  try {
+    const res = await fetch('/api/connect/s3/profiles');
+    if (!res.ok) throw new Error('Could not load S3 profiles.');
+    const d = await res.json();
+    _s3DefaultAvailable = !!d.defaultAvailable;
+    _s3SavedProfiles = Array.isArray(d.saved) ? d.saved : [];
+    if (!_s3SelectedProfileId && _s3SavedProfiles.length) {
+      _s3SelectedProfileId = _s3SavedProfiles[0].id;
+    }
+    _s3ConnMode = pickConnectionMode(_s3DefaultAvailable, _s3SavedProfiles, preferredMode || _s3ConnMode);
+    renderS3SavedOptions();
+    applyS3ConnModeUI();
+  } catch (_) {
+    _s3DefaultAvailable = false;
+    _s3SavedProfiles = [];
+    _s3ConnMode = 'new';
+    renderS3SavedOptions();
+    applyS3ConnModeUI();
+  }
+}
+
+function setS3ConnMode(mode) {
+  _s3ConnMode = mode;
+  applyS3ConnModeUI();
+}
+
+function onS3ConnModeChange() {
+  const mode = document.getElementById('s3ConnModeSel')?.value || 'new';
+  setS3ConnMode(mode);
+}
+
+function onS3SavedProfileChange() {
+  _s3SelectedProfileId = document.getElementById('s3SavedProfileSel')?.value || '';
+}
 
 async function initS3Panel() {
-  try {
-    const res  = await fetch('/api/s3/defaults');
-    if (!res.ok) return;
-    const d = await res.json();
-    _s3EnvCreds = d;
-
-    if (d.hasEnvCreds) {
-      // Pre-fill visible fields
-      const regionEl = document.getElementById('s3Region');
-      const bucketEl = document.getElementById('s3Bucket');
-      if (regionEl) regionEl.value = d.region  || '';
-      if (bucketEl) bucketEl.value = d.bucket  || '';
-
-      // Hide credential input fields, show the banner
-      const fields = document.getElementById('s3CredFields');
-      const note   = document.getElementById('s3CredNote');
-      const banner = document.getElementById('s3EnvBanner');
-      if (fields)  fields.style.display  = 'none';
-      if (note)    note.style.display    = 'none';
-      if (banner)  banner.style.display  = 'flex';
-    }
-  } catch (_) {}
+  await loadS3Profiles(_s3ConnMode);
+  renderS3Message('info', 'Choose connection source and click Browse S3.');
 }
 
 function s3ShowManualFields() {
-  const fields = document.getElementById('s3CredFields');
-  const note   = document.getElementById('s3CredNote');
-  const banner = document.getElementById('s3EnvBanner');
-  if (fields)  fields.style.display  = '';
-  if (note)    note.style.display    = '';
-  if (banner)  banner.style.display  = 'none';
-  _s3EnvCreds = null;   // force manual path
+  setS3ConnMode('new');
+}
+
+function getS3ConnectionPayload(requireFull = true) {
+  const prefix = document.getElementById('s3Prefix')?.value.trim() || '';
+
+  if (_s3ConnMode === 'default') {
+    if (!_s3DefaultAvailable && requireFull) throw new Error('Default S3 credentials are unavailable.');
+    return _s3DefaultAvailable ? { useDefault: true, prefix } : null;
+  }
+
+  if (_s3ConnMode === 'saved') {
+    if (!_s3SelectedProfileId && requireFull) throw new Error('Select a saved S3 connection.');
+    return _s3SelectedProfileId ? { profileId: _s3SelectedProfileId, prefix } : null;
+  }
+
+  const region = document.getElementById('s3Region')?.value.trim() || '';
+  const accessKeyId = document.getElementById('s3AccessKey')?.value.trim() || '';
+  const secretAccessKey = document.getElementById('s3SecretKey')?.value.trim() || '';
+  const bucket = document.getElementById('s3Bucket')?.value.trim() || '';
+
+  if (!region || !accessKeyId || !secretAccessKey || !bucket) {
+    if (requireFull) throw new Error('Fill Region, Access Key ID, Secret Access Key, and Bucket.');
+    return null;
+  }
+
+  return {
+    region,
+    accessKeyId,
+    secretAccessKey,
+    bucket,
+    prefix,
+    profileName: `S3 ${bucket}`
+  };
 }
 
 async function browseS3() {
-  // Use env-sourced creds if fields are hidden (no override)
-  const usingEnv = _s3EnvCreds?.hasEnvCreds &&
-    document.getElementById('s3CredFields')?.style.display === 'none';
-
-  const region          = usingEnv ? (_s3EnvCreds.region  || '') : (document.getElementById('s3Region')?.value.trim()  || '');
-  const accessKeyId     = usingEnv ? ''                          : (document.getElementById('s3AccessKey')?.value.trim() || '');
-  const secretAccessKey = usingEnv ? ''                          : (document.getElementById('s3SecretKey')?.value.trim() || '');
-  const bucket          = usingEnv ? (_s3EnvCreds.bucket  || '') : (document.getElementById('s3Bucket')?.value.trim()  || '');
-  const prefix          = document.getElementById('s3Prefix')?.value.trim();
-
-  // When NOT using env creds, validate that user filled all fields
-  if (!usingEnv && (!region || !accessKeyId || !secretAccessKey || !bucket)) {
-    showError('Please fill in Region, Access Key ID, Secret Access Key, and Bucket before browsing.');
-    return;
-  }
-  if (!region || !bucket) {
-    showError('Region and Bucket are required.');
+  let browseBody;
+  try {
+    browseBody = getS3ConnectionPayload(true);
+  } catch (e) {
+    showError(e.message);
     return;
   }
 
-  // Only include creds in body when user typed them; if usingEnv, server reads from process.env
-  _s3Creds = usingEnv
-    ? { region, accessKeyId: '', secretAccessKey: '', bucket, prefix }
-    : { region, accessKeyId, secretAccessKey, bucket, prefix };
+  _s3Creds = { ...browseBody, mode: _s3ConnMode, profileId: _s3SelectedProfileId };
 
-  const browseBody = usingEnv
-    ? { region, bucket, prefix }
-    : { region, accessKeyId, secretAccessKey, bucket, prefix };
-
-  const listEl = document.getElementById('s3FileList');
-  if (listEl) listEl.innerHTML = '<div style="color:var(--t2);font-size:13px;padding:8px 0">Connecting to S3…</div>';
+  renderS3Message('info', 'Connecting to S3...');
 
   try {
     const resp = await fetch('/api/s3/browse', {
@@ -2745,33 +3145,39 @@ async function browseS3() {
     if (!resp.ok) {
       const msg = data.error || resp.statusText;
       showError('S3 browse error: ' + msg);
-      if (listEl) listEl.innerHTML = `<div style="color:#ef4444;font-size:13px;padding:8px;background:rgba(239,68,68,.1);border-radius:6px;border:1px solid rgba(239,68,68,.3)"><strong>S3 Error:</strong> ${escapeHtml(msg)}</div>`;
+      renderS3Message('error', `<strong>S3 Error:</strong> ${escapeHtml(msg)}`);
       return;
     }
+
+    if (data.usedProfileId) _s3SelectedProfileId = data.usedProfileId;
+    if (_s3ConnMode === 'new') await loadS3Profiles('new');
 
     const files = data.files || [];
-    if (files.length === 0) {
-      if (listEl) listEl.innerHTML = '<div style="color:var(--t2);font-size:13px;padding:8px 0">No supported files found in <strong>' + escapeHtml(bucket + (prefix ? '/' + prefix : '')) + '</strong>. Supported: CSV, TSV, JSON, Parquet, Excel.</div>';
+    const scope = escapeHtml((data.bucket || '') + (data.prefix ? '/' + data.prefix : ''));
+    if (!files.length) {
+      renderS3Message('info', `No supported files found in <strong>${scope}</strong>. Supported: CSV, TSV, JSON, Parquet, Excel.`);
       return;
     }
 
-    // Render file list — use data-s3key to avoid quote escaping issues in onclick
     const rows = files.map(f => `
-      <div class="s3-file-row" style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">
-        <span class="s3-ext-badge" style="font-size:10px;font-weight:700;background:var(--brand-primary);color:#fff;padding:2px 6px;border-radius:4px;min-width:38px;text-align:center;text-transform:uppercase">${escapeHtml(f.ext)}</span>
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(f.key)}">${escapeHtml(f.name)}</div>
-          <div style="font-size:11px;color:var(--t2)">${escapeHtml(f.sizeLabel)} &bull; ${escapeHtml(f.key)}</div>
+      <div class="s3-file-row">
+        <span class="s3-ext-badge">${escapeHtml(f.ext)}</span>
+        <div class="s3-file-meta">
+          <div class="s3-file-name" title="${escapeHtml(f.key)}">${escapeHtml(f.name)}</div>
+          <div class="s3-file-sub">${escapeHtml(f.sizeLabel)} &bull; ${escapeHtml(f.key)}</div>
         </div>
-        <button data-s3key="${escapeHtml(f.key)}" onclick="loadS3FileFromBtn(this)" style="font-size:12px;padding:4px 12px;background:var(--brand-primary);color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap">Load</button>
+        <button class="s3-load-btn" data-s3key="${escapeHtml(f.key)}" onclick="loadS3FileFromBtn(this)">Load</button>
       </div>`).join('');
 
-    if (listEl) listEl.innerHTML = `
-      <div style="font-size:12px;color:var(--t2);margin-bottom:6px">${files.length} file${files.length !== 1 ? 's' : ''} in <strong>${escapeHtml(bucket + (prefix ? '/' + prefix : ''))}</strong></div>
-      ${rows}`;
+    const listEl = document.getElementById('s3FileList');
+    if (listEl) {
+      listEl.innerHTML = `
+        <div class="s3-file-count">${files.length} file${files.length !== 1 ? 's' : ''} in <strong>${scope}</strong></div>
+        ${rows}`;
+    }
   } catch (e) {
-    showError('S3 connection failed: ' + e.message);
-    if (listEl) listEl.innerHTML = '';
+    showError('S3 connection failed: ' + (e.message || 'Unknown error'));
+    renderS3Message('error', 'Could not connect to S3. Check credentials and region.');
   }
 }
 
@@ -2780,17 +3186,30 @@ function loadS3FileFromBtn(btn) {
 }
 
 async function loadS3File(key, btn) {
-  if (!_s3Creds) { showError('Browse S3 first to set credentials.'); return; }
-  const { region, accessKeyId, secretAccessKey, bucket } = _s3Creds;
-  const usingEnv = _s3EnvCreds?.hasEnvCreds && !accessKeyId;
+  if (!_s3Creds) {
+    showError('Browse S3 first to set credentials.');
+    return;
+  }
 
   if (!btn) btn = [...document.querySelectorAll('[data-s3key]')].find(b => b.dataset.s3key === key);
   const origText = btn?.textContent;
-  if (btn) { btn.textContent = 'Loading…'; btn.disabled = true; }
+  if (btn) {
+    btn.textContent = 'Loading...';
+    btn.disabled = true;
+  }
 
-  const loadBody = usingEnv
-    ? { region, bucket, key }
-    : { region, accessKeyId, secretAccessKey, bucket, key };
+  const loadBody = { key };
+  if (_s3Creds.mode === 'default') {
+    loadBody.useDefault = true;
+  } else if (_s3Creds.mode === 'saved') {
+    loadBody.profileId = _s3Creds.profileId;
+  } else {
+    loadBody.region = _s3Creds.region;
+    loadBody.accessKeyId = _s3Creds.accessKeyId;
+    loadBody.secretAccessKey = _s3Creds.secretAccessKey;
+    loadBody.bucket = _s3Creds.bucket;
+    loadBody.profileName = _s3Creds.profileName;
+  }
 
   try {
     const resp = await fetch('/api/s3/load', {
@@ -2802,14 +3221,23 @@ async function loadS3File(key, btn) {
 
     if (!resp.ok) {
       showError('S3 load error: ' + (data.error || resp.statusText));
-      if (btn) { btn.textContent = origText; btn.disabled = false; }
+      if (btn) {
+        btn.textContent = origText;
+        btn.disabled = false;
+      }
       return;
     }
 
     const tables = data.tables || [];
-    const names  = tables.map(t => t.tableName || t.name || t).join(', ');
+    const names = tables.map(t => t.tableName || t.name || t).join(', ');
     showSuccess(`Loaded from S3: ${names || key}`);
-    if (btn) { btn.textContent = 'Loaded ✓'; btn.style.background = 'var(--green, #16a34a)'; }
+    if (data.usedProfileId) _s3SelectedProfileId = data.usedProfileId;
+    if (_s3ConnMode === 'new') await loadS3Profiles('new');
+    if (btn) {
+      btn.textContent = 'Loaded';
+      btn.classList.add('is-loaded');
+      btn.disabled = true;
+    }
 
     await refreshTableLibrary();
     markWizardStepDone(7);
@@ -2817,8 +3245,11 @@ async function loadS3File(key, btn) {
     renderImportResult({ tables, errors: [] });
     goToWizardStep(8, { force: true });
   } catch (e) {
-    showError('S3 load failed: ' + e.message);
-    if (btn) { btn.textContent = origText; btn.disabled = false; }
+    showError('S3 load failed: ' + (e.message || 'Unknown error'));
+    if (btn) {
+      btn.textContent = origText;
+      btn.disabled = false;
+    }
   }
 }
 
