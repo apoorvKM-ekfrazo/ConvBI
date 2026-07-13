@@ -2579,8 +2579,36 @@ function profileTimeLabel(ts) {
   return d.toLocaleString();
 }
 
+function buildConnLoadingHtml(message) {
+  return `<span class="conn-loading-inline"><span class="conn-spinner" aria-hidden="true"></span><span>${escapeHtml(message)}</span></span>`;
+}
+
+function setDbConnectLoading(isLoading) {
+  const connectBtn = document.getElementById('dbConnectBtn');
+  const retryBtn = document.getElementById('dbRetryBtn');
+  if (connectBtn) {
+    connectBtn.disabled = isLoading;
+    connectBtn.classList.toggle('is-loading', isLoading);
+    connectBtn.textContent = isLoading ? 'Connecting...' : 'Connect';
+  }
+  if (retryBtn) {
+    retryBtn.disabled = isLoading;
+    retryBtn.classList.toggle('is-loading', isLoading);
+    retryBtn.textContent = isLoading ? 'Connecting...' : 'Retry';
+  }
+}
+
+function setS3BrowseLoading(isLoading) {
+  const browseBtn = document.getElementById('s3BrowseBtn');
+  if (!browseBtn) return;
+  browseBtn.disabled = isLoading;
+  browseBtn.classList.toggle('is-loading', isLoading);
+  browseBtn.textContent = isLoading ? 'Browsing...' : 'Browse Files';
+}
+
 function setDbStatus(state, message) {
   const dot = document.getElementById('dbStatusDot');
+  const spinner = document.getElementById('dbStatusSpinner');
   const text = document.getElementById('dbStatusText');
   const srcState = document.getElementById('dbSourceState');
   if (!dot || !text || !srcState) return;
@@ -2600,8 +2628,10 @@ function setDbStatus(state, message) {
   } else {
     dot.className = 'db-dot';
     srcState.className = 'status-pill status-warn';
-    srcState.textContent = 'Awaiting credentials';
+    srcState.textContent = 'Ready';
   }
+
+  if (spinner) spinner.style.display = state === 'checking' ? 'inline-block' : 'none';
 
   text.textContent = message;
 }
@@ -2650,7 +2680,7 @@ function applyDbConnModeUI() {
 
   if (_dbConnMode === 'default') {
     setDbStatus('idle', _dbDefaultAvailable
-      ? 'Backend default Databricks connection selected.'
+      ? 'Default Databricks connection selected.'
       : 'No backend default Databricks credentials available.');
   } else if (_dbConnMode === 'saved') {
     setDbStatus('idle', _dbSavedProfiles.length
@@ -2731,7 +2761,7 @@ function resetDbBrowserUI() {
   if (previewArea) previewArea.innerHTML = '<div class="db-empty">Select a table to preview.</div>';
   if (btn) {
     btn.disabled = true;
-    btn.textContent = 'Select a table to load';
+    btn.textContent = 'Load selected table';
   }
 }
 
@@ -2758,46 +2788,51 @@ function getDbConnectionPayload(requireFull = true) {
 }
 
 async function initDatabricksBrowser() {
-  await loadDbProfiles(_dbConnMode);
-
-  const catalogList = document.getElementById('dbCatalogList');
-  if (!catalogList) return;
-
-  resetDbBrowserUI();
-
-  let payload = null;
+  setDbConnectLoading(true);
   try {
-    payload = getDbConnectionPayload(false);
-  } catch (e) {
-    setDbStatus('idle', e.message);
-    catalogList.innerHTML = `<div class="db-empty">${escapeHtml(e.message)}</div>`;
-    return;
+    await loadDbProfiles(_dbConnMode);
+
+    const catalogList = document.getElementById('dbCatalogList');
+    if (!catalogList) return;
+
+    resetDbBrowserUI();
+
+    let payload = null;
+    try {
+      payload = getDbConnectionPayload(false);
+    } catch (e) {
+      setDbStatus('idle', e.message);
+      catalogList.innerHTML = `<div class="db-empty">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+
+    if (!payload) {
+      setDbStatus('idle', _dbConnMode === 'new'
+        ? 'Enter Host, HTTP Path, and PAT token to connect.'
+        : 'Select a connection source to continue.');
+      catalogList.innerHTML = '<div class="db-empty">Provide credentials to browse catalogs.</div>';
+      return;
+    }
+
+    setDbStatus('checking', 'Connecting to Databricks and loading catalogs. This can take a few seconds...');
+
+    const loaded = await loadDbCatalogs();
+    if (!loaded) return;
+
+    if (_dbConnMode === 'new') {
+      // Refresh saved profiles in background without blocking initial render.
+      loadDbProfiles('new');
+    }
+    setDbStatus('connected', 'Connected to Databricks. Catalogs are ready.');
+  } finally {
+    setDbConnectLoading(false);
   }
-
-  if (!payload) {
-    setDbStatus('idle', _dbConnMode === 'new'
-      ? 'Enter Host, HTTP Path, and PAT token to connect.'
-      : 'Select a connection source to continue.');
-    catalogList.innerHTML = '<div class="db-empty">Provide credentials to browse catalogs.</div>';
-    return;
-  }
-
-  setDbStatus('checking', 'Connecting to Databricks and loading catalogs...');
-
-  const loaded = await loadDbCatalogs();
-  if (!loaded) return;
-
-  if (_dbConnMode === 'new') {
-    // Refresh saved profiles in background without blocking initial render.
-    loadDbProfiles('new');
-  }
-  setDbStatus('connected', 'Connected to Databricks');
 }
 
 async function loadDbCatalogs() {
   const list = document.getElementById('dbCatalogList');
   if (!list) return false;
-  list.innerHTML = '<div class="db-loading">Loading...</div>';
+  list.innerHTML = `<div class="db-loading">${buildConnLoadingHtml('Loading catalogs from Databricks...')}</div>`;
 
   try {
     const payload = getDbConnectionPayload(true);
@@ -2832,7 +2867,7 @@ async function selectDbCatalog(catalog) {
   const schemaList = document.getElementById('dbSchemaList');
   const tableList = document.getElementById('dbTableList');
   const previewArea = document.getElementById('dbPreviewArea');
-  if (schemaList) schemaList.innerHTML = '<div class="db-loading">Loading...</div>';
+  if (schemaList) schemaList.innerHTML = `<div class="db-loading">${buildConnLoadingHtml(`Loading schemas for ${catalog}...`)}</div>`;
   if (tableList) tableList.innerHTML = '<div class="db-empty">Select a schema.</div>';
   if (previewArea) previewArea.innerHTML = '<div class="db-empty">Select a table to preview.</div>';
 
@@ -2866,7 +2901,7 @@ async function selectDbSchema(schema) {
 
   const tableList = document.getElementById('dbTableList');
   const previewArea = document.getElementById('dbPreviewArea');
-  if (tableList) tableList.innerHTML = '<div class="db-loading">Loading...</div>';
+  if (tableList) tableList.innerHTML = `<div class="db-loading">${buildConnLoadingHtml(`Loading tables for ${schema}...`)}</div>`;
   if (previewArea) previewArea.innerHTML = '<div class="db-empty">Select a table to preview.</div>';
 
   try {
@@ -2908,6 +2943,7 @@ async function selectDbTable(table) {
 
   const area = document.getElementById('dbPreviewArea');
   if (!area) return;
+  area.innerHTML = `<div class="db-loading">${buildConnLoadingHtml(`Loading preview for ${table}...`)}</div>`;
 
   try {
     const payload = {
@@ -2941,8 +2977,11 @@ async function loadDatabricksTable() {
   const btn = document.getElementById('dbLoadTableBtn');
   if (btn) {
     btn.disabled = true;
+    btn.classList.add('is-loading');
     btn.textContent = 'Loading...';
   }
+
+  setDbStatus('checking', `Loading table "${table}" from Databricks...`);
 
   try {
     const payload = {
@@ -2970,6 +3009,7 @@ async function loadDatabricksTable() {
 
     const rowCount = Number(tables[0]?.rowCount || 0);
     showSuccess(`Table "${table}" loaded${rowCount ? ` - ${rowCount} rows.` : '.'}`);
+    setDbStatus('connected', `Table "${table}" loaded successfully.`);
     await refreshTableLibrary();
     markWizardStepDone(7);
     markWizardStepDone(8);
@@ -2977,9 +3017,11 @@ async function loadDatabricksTable() {
     goToWizardStep(8, { force: true });
   } catch (e) {
     showError('Load error: ' + (e.message || 'Databricks table load failed.'));
+    setDbStatus('error', 'Load failed. Please retry.');
   } finally {
     if (btn) {
       btn.disabled = false;
+      btn.classList.remove('is-loading');
       btn.textContent = `Load "${table}"`;
     }
   }
@@ -2990,7 +3032,11 @@ async function loadDatabricksTable() {
 function renderS3Message(type, html) {
   const listEl = document.getElementById('s3FileList');
   if (!listEl) return;
-  const cls = type === 'error' ? 'conn-msg conn-msg-error' : 'conn-msg';
+  const cls = type === 'error'
+    ? 'conn-msg conn-msg-error'
+    : type === 'loading'
+      ? 'conn-msg conn-msg-loading'
+      : 'conn-msg';
   listEl.innerHTML = `<div class="${cls}">${html}</div>`;
 }
 
@@ -3120,8 +3166,14 @@ async function browseS3() {
   }
 
   _s3Creds = { ...browseBody, mode: _s3ConnMode, profileId: _s3SelectedProfileId };
+  const browseMessage = _s3ConnMode === 'default'
+    ? 'Connecting to AWS S3 with backend default credentials...'
+    : _s3ConnMode === 'saved'
+      ? 'Connecting to AWS S3 with your saved connection...'
+      : 'Connecting to AWS S3 and validating your credentials...';
 
-  renderS3Message('info', 'Connecting to S3...');
+  setS3BrowseLoading(true);
+  renderS3Message('loading', buildConnLoadingHtml(browseMessage));
 
   try {
     const resp = await fetch('/api/s3/browse', {
@@ -3169,6 +3221,8 @@ async function browseS3() {
   } catch (e) {
     showError('S3 connection failed: ' + (e.message || 'Unknown error'));
     renderS3Message('error', 'Could not connect to S3. Check credentials and region.');
+  } finally {
+    setS3BrowseLoading(false);
   }
 }
 
@@ -3185,6 +3239,7 @@ async function loadS3File(key, btn) {
   if (!btn) btn = [...document.querySelectorAll('[data-s3key]')].find(b => b.dataset.s3key === key);
   const origText = btn?.textContent;
   if (btn) {
+    btn.classList.add('is-loading');
     btn.textContent = 'Loading...';
     btn.disabled = true;
   }
@@ -3213,6 +3268,7 @@ async function loadS3File(key, btn) {
     if (!resp.ok) {
       showError('S3 load error: ' + (data.error || resp.statusText));
       if (btn) {
+        btn.classList.remove('is-loading');
         btn.textContent = origText;
         btn.disabled = false;
       }
@@ -3227,6 +3283,7 @@ async function loadS3File(key, btn) {
       loadS3Profiles('new').catch(() => {});
     }
     if (btn) {
+      btn.classList.remove('is-loading');
       btn.textContent = 'Loaded';
       btn.classList.add('is-loaded');
       btn.disabled = true;
@@ -3240,6 +3297,7 @@ async function loadS3File(key, btn) {
   } catch (e) {
     showError('S3 load failed: ' + (e.message || 'Unknown error'));
     if (btn) {
+      btn.classList.remove('is-loading');
       btn.textContent = origText;
       btn.disabled = false;
     }

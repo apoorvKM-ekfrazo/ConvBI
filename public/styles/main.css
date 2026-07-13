@@ -975,70 +975,83 @@ th {
 
 
 .conn-panel {
-  margin-top: 2px;
+  margin-top: 4px;
 }
 
 .conn-card {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-card);
-  padding: 14px;
-  background: var(--surface-raised);
+  padding: 16px;
+  background: var(--surface);
+  box-shadow: none;
 }
 
 .conn-head {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .conn-title {
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
   color: var(--text-primary);
 }
 
 .conn-subtitle {
-  margin-top: 4px;
+  margin-top: 2px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.conn-step-label {
+  margin-top: 10px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: #475569;
 }
 
 .conn-env-banner {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: rgba(34, 197, 94, 0.08);
-  border: 1px solid rgba(34, 197, 94, 0.3);
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.25);
   border-radius: var(--radius-ui);
-  padding: 10px 12px;
-  margin-bottom: 12px;
+  padding: 9px 10px;
+  margin-bottom: 10px;
   font-size: 12px;
-  color: var(--success-text);
+  color: #1e3a8a;
 }
 
 .conn-inline-btn {
   margin-left: auto;
-  border: 1px solid rgba(22, 101, 52, 0.35);
+  border: 1px solid rgba(30, 58, 138, 0.28);
   border-radius: 6px;
-  background: transparent;
-  color: var(--success-text);
-  padding: 2px 8px;
+  background: rgba(255, 255, 255, 0.75);
+  color: #1e3a8a;
+  padding: 3px 8px;
   font-size: 11px;
   cursor: pointer;
 }
 
 .conn-form {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .conn-mode-grid {
   display: grid;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 10px;
+  margin-bottom: 4px;
 }
 
 .conn-field {
   display: grid;
-  gap: 5px;
+  gap: 6px;
 }
 
 .conn-inline-row {
@@ -1050,19 +1063,19 @@ th {
 
 .conn-field label {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
 }
 
 .db-status-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   border: 1px solid var(--border-subtle);
-  background: var(--surface);
+  background: var(--surface-alt);
   border-radius: var(--radius-ui);
-  padding: 8px 10px;
-  margin-top: 12px;
+  padding: 10px;
+  margin-top: 10px;
 }
 
 .db-dot {
@@ -1084,8 +1097,34 @@ th {
   background: var(--warning);
 }
 
+.conn-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(100, 116, 139, 0.28);
+  border-top-color: var(--brand-primary);
+  border-radius: 999px;
+  display: inline-block;
+  animation: connSpin 0.85s linear infinite;
+}
+
+.conn-spinner-inline {
+  flex: 0 0 auto;
+}
+
+.conn-loading-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+@keyframes connSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .db-status-text {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
   flex: 1;
 }
@@ -1095,22 +1134,22 @@ th {
   border-radius: var(--radius-ui);
   background: var(--surface-raised);
   color: var(--text-primary);
-  padding: 5px 10px;
+  padding: 6px 10px;
   cursor: pointer;
 }
 
 .conn-actions-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 4px;
+  gap: 10px;
+  margin-top: 6px;
 }
 
 .db-browser {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 10px;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .db-browser-col {
@@ -1122,7 +1161,7 @@ th {
 
 .db-col-header {
   display: block;
-  padding: 8px 10px;
+  padding: 8px 9px;
   font-size: 11px;
   text-transform: uppercase;
   color: var(--text-secondary);
@@ -1131,25 +1170,25 @@ th {
 
 .db-col-list {
   display: block;
-  max-height: 260px;
-  min-height: 160px;
+  max-height: 240px;
+  min-height: 152px;
   overflow: auto;
 }
 
 .db-item {
   display: block;
-  padding: 8px 10px;
+  padding: 8px 9px;
   border-bottom: 1px solid var(--border-subtle);
-  font-size: 12px;
+  font-size: 12.5px;
   cursor: pointer;
 }
 
 .db-item:hover {
-  background: rgba(122, 47, 143, 0.08);
+  background: rgba(15, 23, 42, 0.05);
 }
 
 .db-item-active {
-  background: rgba(122, 47, 143, 0.12);
+  background: rgba(59, 130, 246, 0.12);
 }
 
 .db-loading,
@@ -1167,8 +1206,8 @@ th {
 
 .db-preview-area {
   display: block;
-  margin-top: 10px;
-  min-height: 54px;
+  margin-top: 8px;
+  min-height: 60px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-ui);
   padding: 10px;
@@ -1177,8 +1216,8 @@ th {
 .conn-input {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-ui);
-  min-height: 38px;
-  padding: 8px 10px;
+  min-height: 40px;
+  padding: 8px 11px;
   width: 100%;
   background: var(--surface-raised);
   color: var(--text-primary);
@@ -1187,12 +1226,13 @@ th {
 .conn-note {
   color: var(--text-secondary);
   font-size: 12px;
-  margin-top: 8px;
+  line-height: 1.45;
+  margin-top: 6px;
 }
 
 .conn-primary-action,
 .db-load-btn {
-  margin-top: 12px;
+  margin-top: 10px;
 }
 
 .preview-t {
@@ -1223,6 +1263,13 @@ th {
   padding: 8px 0;
 }
 
+.conn-msg-loading {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-alt);
+  padding: 8px 10px;
+}
+
 .conn-msg-error {
   color: var(--danger-text);
   background: rgba(239, 68, 68, 0.1);
@@ -1241,7 +1288,7 @@ th {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 0;
+  padding: 8px 0;
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -1277,13 +1324,39 @@ th {
 
 .s3-load-btn {
   font-size: 12px;
-  padding: 4px 12px;
+  padding: 5px 12px;
   background: var(--brand-primary);
   color: #fff;
   border: none;
   border-radius: 6px;
   cursor: pointer;
   white-space: nowrap;
+}
+
+.submit-btn.is-loading,
+.db-refresh-btn.is-loading,
+.s3-load-btn.is-loading {
+  cursor: wait;
+}
+
+.submit-btn.is-loading::before,
+.db-refresh-btn.is-loading::before,
+.s3-load-btn.is-loading::before {
+  content: '';
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.38);
+  border-top-color: #fff;
+  border-radius: 999px;
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: -2px;
+  animation: connSpin 0.85s linear infinite;
+}
+
+.db-refresh-btn.is-loading::before {
+  border-color: rgba(100, 116, 139, 0.3);
+  border-top-color: var(--brand-primary);
 }
 
 .s3-load-btn.is-loaded {

@@ -165,10 +165,11 @@
         <div id="databricksPanel" class="conn-panel" style="display:none">
           <div class="conn-card">
             <div class="conn-head">
-              <div class="conn-title">Databricks Connection</div>
-              <div class="conn-subtitle">Use server credentials or switch to manual credentials for this session.</div>
+              <div class="conn-title">Databricks</div>
+              <div class="conn-subtitle">Choose a source, connect, and load a table.</div>
             </div>
 
+            <div class="conn-step-label">1. Choose Connection Source</div>
             <div class="conn-mode-grid">
               <div class="conn-field">
                 <label for="dbConnModeSel">Connection Source</label>
@@ -179,7 +180,7 @@
                 </select>
               </div>
               <div class="conn-field" id="dbSavedWrap" style="display:none">
-                <label for="dbSavedProfileSel">Saved Databricks Connections</label>
+                <label for="dbSavedProfileSel">Saved Connections</label>
                 <div class="conn-inline-row">
                   <select class="conn-input" id="dbSavedProfileSel" onchange="onDbSavedProfileChange()"></select>
                   <button class="flow-btn-secondary" type="button" onclick="loadDbProfiles()">Refresh</button>
@@ -189,10 +190,11 @@
 
             <div id="dbEnvBanner" class="conn-env-banner" style="display:none">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Using Databricks credentials from server config.</span>
-              <button class="conn-inline-btn" type="button" onclick="dbShowManualFields()">Use Manual Credentials</button>
+              <span>Backend default connection is ready.</span>
+              <button class="conn-inline-btn" type="button" onclick="dbShowManualFields()">Use New Connection</button>
             </div>
 
+            <div class="conn-step-label">2. Connect</div>
             <div id="dbCredFields" class="conn-form" style="display:none">
               <div class="conn-field">
                 <label for="dbHost">Workspace Host</label>
@@ -207,37 +209,40 @@
                 <input class="conn-input" id="dbToken" type="password" placeholder="Databricks PAT token" />
               </div>
             </div>
-            <div id="dbCredNote" class="conn-note" style="display:none">Credentials are used in-memory only and never stored to disk.</div>
+            <div id="dbCredNote" class="conn-note" style="display:none">Credentials are used only for this session and are not written to disk.</div>
 
             <div class="conn-actions-row">
-              <button class="flow-btn-secondary" id="dbUseServerBtn" type="button" onclick="dbUseServerConfig()" style="display:none">Use Server Config</button>
-              <button class="submit-btn" type="button" onclick="initDatabricksBrowser()">Connect</button>
+              <button class="flow-btn-secondary" id="dbUseServerBtn" type="button" onclick="dbUseServerConfig()" style="display:none">Use Default</button>
+              <button class="submit-btn" id="dbConnectBtn" type="button" onclick="initDatabricksBrowser()">Connect</button>
             </div>
 
             <div class="db-status-bar">
               <span id="dbStatusDot" class="db-dot"></span>
+              <span id="dbStatusSpinner" class="conn-spinner conn-spinner-inline" style="display:none" aria-hidden="true"></span>
               <span id="dbStatusText" class="db-status-text">Not connected</span>
-              <button class="db-refresh-btn" type="button" onclick="initDatabricksBrowser()">Reconnect</button>
+              <button class="db-refresh-btn" id="dbRetryBtn" type="button" onclick="initDatabricksBrowser()">Retry</button>
               <span class="status-pill status-warn" id="dbSourceState">Not connected</span>
             </div>
 
+            <div class="conn-step-label">3. Browse and Load</div>
             <div class="db-browser">
               <div class="db-browser-col"><div class="db-col-header">Catalogs</div><div id="dbCatalogList" class="db-col-list"></div></div>
               <div class="db-browser-col"><div class="db-col-header">Schemas</div><div id="dbSchemaList" class="db-col-list"></div></div>
               <div class="db-browser-col"><div class="db-col-header">Tables</div><div id="dbTableList" class="db-col-list"></div></div>
             </div>
             <div id="dbPreviewArea" class="db-preview-area"></div>
-            <button class="submit-btn db-load-btn" id="dbLoadTableBtn" type="button" onclick="loadDatabricksTable()" disabled>Select a table to load</button>
+            <button class="submit-btn db-load-btn" id="dbLoadTableBtn" type="button" onclick="loadDatabricksTable()" disabled>Load selected table</button>
           </div>
         </div>
 
         <div id="s3Panel" class="conn-panel" style="display:none">
           <div class="conn-card">
             <div class="conn-head">
-              <div class="conn-title">AWS S3 Connection</div>
-              <div class="conn-subtitle">Browse supported files in your bucket and load them into analysis.</div>
+              <div class="conn-title">AWS S3</div>
+              <div class="conn-subtitle">Choose a source, browse files, and load what you need.</div>
             </div>
 
+            <div class="conn-step-label">1. Choose Connection Source</div>
             <div class="conn-mode-grid">
               <div class="conn-field">
                 <label for="s3ConnModeSel">Connection Source</label>
@@ -248,7 +253,7 @@
                 </select>
               </div>
               <div class="conn-field" id="s3SavedWrap" style="display:none">
-                <label for="s3SavedProfileSel">Saved S3 Connections</label>
+                <label for="s3SavedProfileSel">Saved Connections</label>
                 <div class="conn-inline-row">
                   <select class="conn-input" id="s3SavedProfileSel" onchange="onS3SavedProfileChange()"></select>
                   <button class="flow-btn-secondary" type="button" onclick="loadS3Profiles()">Refresh</button>
@@ -258,10 +263,11 @@
 
             <div id="s3EnvBanner" class="conn-env-banner" style="display:none">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span>Credentials loaded from server config. You can browse directly.</span>
-              <button class="conn-inline-btn" type="button" onclick="s3ShowManualFields()">Override</button>
+              <span>Backend default connection is ready.</span>
+              <button class="conn-inline-btn" type="button" onclick="s3ShowManualFields()">Use New Connection</button>
             </div>
 
+            <div class="conn-step-label">2. Enter Credentials</div>
             <div id="s3CredFields" class="conn-form">
               <div class="conn-field">
                 <label for="s3Region">Region</label>
@@ -280,14 +286,15 @@
                 <input class="conn-input" id="s3Bucket" placeholder="my-data-bucket" />
               </div>
             </div>
-            <div id="s3CredNote" class="conn-note">Credentials are used in-memory only and never stored to disk.</div>
+            <div id="s3CredNote" class="conn-note">Credentials are used only for this session and are not written to disk.</div>
 
+            <div class="conn-step-label">3. Browse Files</div>
             <div class="conn-field">
               <label for="s3Prefix">Prefix / Folder (Optional)</label>
               <input class="conn-input" id="s3Prefix" placeholder="folder/path" />
             </div>
 
-            <button class="submit-btn conn-primary-action" type="button" onclick="browseS3()">Browse S3</button>
+            <button class="submit-btn conn-primary-action" id="s3BrowseBtn" type="button" onclick="browseS3()">Browse Files</button>
             <div id="s3FileList" class="s3-file-list"></div>
           </div>
         </div>
