@@ -502,7 +502,10 @@ function switchSourceTab(name) {
   const sourceContinue = document.getElementById('diContinueSourceBtn');
   if (sourceContinue) sourceContinue.disabled = !selectedDataSource;
 
-  if (name === 'databricks') initDatabricksBrowser();
+  if (name === 'databricks') {
+    resetDbBrowserUI();
+    loadDbProfiles(_dbConnMode);
+  }
   if (name === 's3') initS3Panel();
 }
 
@@ -2779,37 +2782,21 @@ async function initDatabricksBrowser() {
     return;
   }
 
-  setDbStatus('checking', 'Checking Databricks connection...');
+  setDbStatus('checking', 'Connecting to Databricks and loading catalogs...');
 
-  try {
-    const resp = await fetch('/api/connect/databricks/test', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    const data = await resp.json();
+  const loaded = await loadDbCatalogs();
+  if (!loaded) return;
 
-    if (!resp.ok || !data.connected) {
-      throw new Error(data.error || 'Could not authenticate with Databricks.');
-    }
-
-    if (data.usedProfileId) _dbSelectedProfileId = data.usedProfileId;
-    if (_dbConnMode === 'new') {
-      await loadDbProfiles('new');
-      setDbStatus('connected', 'Connected to Databricks');
-    }
-
-    setDbStatus('connected', 'Connected to ' + (data.host || 'Databricks'));
-    await loadDbCatalogs();
-  } catch (e) {
-    setDbStatus('error', 'Error: ' + (e.message || 'Databricks connection failed'));
-    catalogList.innerHTML = `<div class="db-err">${escapeHtml(e.message || 'Could not connect to Databricks.')}</div>`;
+  if (_dbConnMode === 'new') {
+    // Refresh saved profiles in background without blocking initial render.
+    loadDbProfiles('new');
   }
+  setDbStatus('connected', 'Connected to Databricks');
 }
 
 async function loadDbCatalogs() {
   const list = document.getElementById('dbCatalogList');
-  if (!list) return;
+  if (!list) return false;
   list.innerHTML = '<div class="db-loading">Loading...</div>';
 
   try {
@@ -2827,9 +2814,11 @@ async function loadDbCatalogs() {
     list.innerHTML = cats.map(c =>
       `<div class="db-item" onclick="selectDbCatalog('${escapeHtml(c)}')">${escapeHtml(c)}</div>`
     ).join('') || '<div class="db-empty">No catalogs found.</div>';
+    return true;
   } catch (e) {
     setDbStatus('error', 'Error: ' + (e.message || 'Could not load catalogs'));
     list.innerHTML = `<div class="db-err">${escapeHtml(e.message || 'Could not load catalogs.')}</div>`;
+    return false;
   }
 }
 
@@ -3150,7 +3139,9 @@ async function browseS3() {
     }
 
     if (data.usedProfileId) _s3SelectedProfileId = data.usedProfileId;
-    if (_s3ConnMode === 'new') await loadS3Profiles('new');
+    if (_s3ConnMode === 'new') {
+      loadS3Profiles('new').catch(() => {});
+    }
 
     const files = data.files || [];
     const scope = escapeHtml((data.bucket || '') + (data.prefix ? '/' + data.prefix : ''));
@@ -3232,7 +3223,9 @@ async function loadS3File(key, btn) {
     const names = tables.map(t => t.tableName || t.name || t).join(', ');
     showSuccess(`Loaded from S3: ${names || key}`);
     if (data.usedProfileId) _s3SelectedProfileId = data.usedProfileId;
-    if (_s3ConnMode === 'new') await loadS3Profiles('new');
+    if (_s3ConnMode === 'new') {
+      loadS3Profiles('new').catch(() => {});
+    }
     if (btn) {
       btn.textContent = 'Loaded';
       btn.classList.add('is-loaded');
