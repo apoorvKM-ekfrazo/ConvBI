@@ -364,6 +364,10 @@ select {
   overflow-x: hidden;
 }
 
+#input .section-head p {
+  display: none;
+}
+
 .section {
   display: none;
 }
@@ -673,6 +677,17 @@ th {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 12px;
+}
+
+.table-library-toggle-row {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.table-library-toggle-btn {
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .table-view-toggle {
@@ -1707,6 +1722,10 @@ body.density-compact .table-library-head {
   margin-bottom: 8px;
 }
 
+body.density-compact .table-library-toggle-row {
+  margin-top: 8px;
+}
+
 
 .no-data {
   border: 1px dashed var(--border-subtle);
@@ -1891,39 +1910,42 @@ body.density-compact .table-library-head {
 /* Data Input Wizard */
 .di-wizard {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .di-stepper {
   display: grid;
-  grid-template-columns: repeat(5, minmax(120px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(5, minmax(92px, 1fr));
+  gap: 6px;
   overflow-x: auto;
-  padding-bottom: 4px;
+  padding-bottom: 2px;
 }
 
 .di-step-item {
   border: 1px solid var(--border-subtle);
-  border-radius: 10px;
+  border-radius: 9px;
   background: var(--surface);
-  padding: 8px;
-  min-height: 62px;
-  display: grid;
-  gap: 4px;
+  padding: 6px 7px;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   cursor: default;
 }
 
 .di-step-item .n {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: .04em;
+  letter-spacing: .02em;
+  min-width: 16px;
+  text-align: center;
 }
 
 .di-step-item .t {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-secondary);
-  line-height: 1.2;
+  line-height: 1.15;
+  white-space: nowrap;
 }
 
 .di-step-item.current {
@@ -1955,10 +1977,8 @@ body.theme-dark .di-step-item.done .t {
 }
 
 .di-guidance {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  padding: 12px;
+  display: block;
+  padding: 8px 10px;
 }
 
 .di-guidance-title {
@@ -1970,9 +1990,12 @@ body.theme-dark .di-step-item.done .t {
 }
 
 .di-guidance-text {
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--text-primary);
-  line-height: 1.45;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .di-stage {
@@ -2254,6 +2277,15 @@ body.di-modal-open {
   font-size: 16px;
   font-weight: 700;
   color: var(--text-primary);
+}
+
+.di-flow-modal-breadcrumb {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+  margin-bottom: 3px;
+  text-transform: uppercase;
 }
 
 .di-flow-modal-sub {

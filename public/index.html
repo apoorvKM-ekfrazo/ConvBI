@@ -386,6 +386,7 @@
       <div class="di-flow-modal-card">
         <div class="di-flow-modal-head">
           <div>
+            <div class="di-flow-modal-breadcrumb" id="diFlowModalBreadcrumb">Data Input / Review and import</div>
             <div class="di-flow-modal-title" id="diFlowModalTitle">Review and import</div>
             <div class="di-flow-modal-sub" id="diFlowModalSub">Step 1 of 3</div>
           </div>
@@ -434,6 +435,12 @@
 
     <div id="errorBox" class="error-box"></div>
     <div id="successBox" class="success-box"></div>
+
+    <div id="tableLibraryToggleRow" class="table-library-toggle-row" style="display:none">
+      <button id="tableLibraryToggleBtn" class="mini-btn table-library-toggle-btn" type="button" onclick="toggleTableLibraryPanel()" aria-expanded="false">
+        Show Table Library
+      </button>
+    </div>
 
     <div id="tableLibrarySection" style="display:none">
       <div class="card" style="margin-top:1.25rem">

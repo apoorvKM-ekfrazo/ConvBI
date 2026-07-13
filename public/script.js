@@ -23,6 +23,11 @@ let glossaryMap = {};
 const SIDEBAR_PIN_KEY = 'convbi_sidebar_pinned';
 const DENSITY_MODE_KEY = 'convbi_density_mode';
 const QA_DETAILS_KEY = 'convbi_qa_show_details';
+const TABLE_LIBRARY_EXPANDED_KEY = 'convbi_table_library_expanded';
+const NAV_STATE_KEYS = ['tab', 'source', 'flow'];
+let navStateSuspended = false;
+let lastNavStateKey = '';
+let tableLibraryExpanded = localStorage.getItem(TABLE_LIBRARY_EXPANDED_KEY) === 'true';
 
 const WORKFLOW_LABELS = {
   6: 'User Asks Business Question',
@@ -55,7 +60,7 @@ const UPLOAD_TYPE_CONFIG = {
 
 const DI_PHASES = [
   { id: 1, title: 'Connect', what: 'Choose where your data comes from.', why: '', help: 'Pick Files, Databricks, or AWS S3.' },
-  { id: 2, title: 'Add Data', what: 'Select file type or connect your source.', why: '', help: 'Load your data and preview it.' },
+  { id: 2, title: 'Add Data', what: 'Select file type or connect your source.', why: '', help: 'Load your data.' },
   { id: 3, title: 'Import', what: 'Import your selected data.', why: '', help: 'Wait for import to finish.' },
   { id: 4, title: 'Setup', what: 'Choose quick setup or custom setup.', why: '', help: 'Confirm tables and business terms.' },
   { id: 5, title: 'Analyze', what: 'Open dashboard and start analysis.', why: '', help: 'Ask questions after setup is complete.' }
@@ -86,7 +91,7 @@ function updateWizardGuidance(stepId) {
   const def = DI_PHASES.find(s => s.id === phase) || DI_PHASES[0];
   const stepHint = document.getElementById('diStepHint');
   if (stepHint) {
-    stepHint.textContent = `${def.what} ${def.help}`;
+    stepHint.textContent = def.help || def.what;
     return;
   }
   const w = document.getElementById('diWhatText');
@@ -148,6 +153,7 @@ function isVisibleInLayout(el) {
 function updateDataInputModalState() {
   const backdrop = document.getElementById('diModalBackdrop');
   const modal = document.getElementById('diFlowModal');
+  const breadcrumb = document.getElementById('diFlowModalBreadcrumb');
   const title = document.getElementById('diFlowModalTitle');
   const sub = document.getElementById('diFlowModalSub');
   if (!backdrop || !modal) return;
@@ -168,12 +174,15 @@ function updateDataInputModalState() {
 
   if (title && sub) {
     if (readyOpen) {
+      if (breadcrumb) breadcrumb.textContent = 'Data Input / Ready';
       title.textContent = 'Data is ready';
       sub.textContent = 'Step 3 of 3';
     } else if (setupOpen) {
+      if (breadcrumb) breadcrumb.textContent = 'Data Input / Import summary';
       title.textContent = 'Import summary';
       sub.textContent = 'Step 2 of 3';
     } else {
+      if (breadcrumb) breadcrumb.textContent = 'Data Input / Review and import';
       title.textContent = 'Review and import';
       sub.textContent = 'Step 1 of 3';
     }
@@ -185,6 +194,136 @@ function updateDataInputModalState() {
   modal.classList.toggle('open', open);
   modal.setAttribute('aria-hidden', open ? 'false' : 'true');
   document.body.classList.toggle('di-modal-open', open);
+
+  updateTableLibraryVisibility();
+
+  syncNavigationState('push');
+}
+
+function getActiveTabName() {
+  return document.querySelector('.section.active')?.id || 'input';
+}
+
+function getActiveFlowName() {
+  const review = document.getElementById('filesReviewSection');
+  const stage8 = document.getElementById('diStage8');
+  const stage12 = document.getElementById('diStage12');
+  if (isVisibleInLayout(stage12)) return 'ready';
+  if (isVisibleInLayout(stage8)) return 'summary';
+  if (isVisibleInLayout(review)) return 'review';
+  return '';
+}
+
+function updateTableLibraryVisibility() {
+  const section = document.getElementById('tableLibrarySection');
+  const toggleRow = document.getElementById('tableLibraryToggleRow');
+  const toggleBtn = document.getElementById('tableLibraryToggleBtn');
+  if (!section) return;
+  const names = Object.keys(loadedTables || {});
+  if (!names.length) {
+    if (toggleRow) toggleRow.style.display = 'none';
+    if (toggleBtn) {
+      toggleBtn.textContent = 'Show Table Library';
+      toggleBtn.setAttribute('aria-expanded', 'false');
+    }
+    section.style.display = 'none';
+    return;
+  }
+  const isInputTab = getActiveTabName() === 'input';
+  const modalFlowOpen = !!getActiveFlowName();
+  const canShow = isInputTab && !modalFlowOpen;
+
+  if (toggleRow) toggleRow.style.display = canShow ? '' : 'none';
+  if (toggleBtn) {
+    toggleBtn.textContent = tableLibraryExpanded ? 'Hide Table Library' : 'Show Table Library';
+    toggleBtn.setAttribute('aria-expanded', tableLibraryExpanded ? 'true' : 'false');
+  }
+
+  section.style.display = (canShow && tableLibraryExpanded) ? '' : 'none';
+}
+
+function toggleTableLibraryPanel() {
+  tableLibraryExpanded = !tableLibraryExpanded;
+  localStorage.setItem(TABLE_LIBRARY_EXPANDED_KEY, tableLibraryExpanded ? 'true' : 'false');
+  updateTableLibraryVisibility();
+  if (tableLibraryExpanded) renderTableLibrary();
+}
+
+function buildNavigationStateFromUI() {
+  const tab = getActiveTabName();
+  const state = { tab };
+  if (tab === 'input') {
+    if (selectedDataSource) state.source = selectedDataSource;
+    const flow = getActiveFlowName();
+    if (flow) state.flow = flow;
+  }
+  return state;
+}
+
+function navigationStateKey(state) {
+  return JSON.stringify({
+    tab: state?.tab || '',
+    source: state?.source || '',
+    flow: state?.flow || ''
+  });
+}
+
+function parseNavigationStateFromUrl() {
+  const params = new URLSearchParams(window.location.search || '');
+  const tab = String(params.get('tab') || '').toLowerCase();
+  const source = String(params.get('source') || '').toLowerCase();
+  const flow = String(params.get('flow') || '').toLowerCase();
+  return {
+    tab: (tab === 'qa' || tab === 'input') ? tab : 'input',
+    source: ['files', 'databricks', 's3'].includes(source) ? source : '',
+    flow: ['review', 'summary', 'ready'].includes(flow) ? flow : ''
+  };
+}
+
+function applyNavigationState(state = {}) {
+  navStateSuspended = true;
+  try {
+    const tab = (state.tab === 'qa' || state.tab === 'input') ? state.tab : 'input';
+
+    if (tab === 'input' && ['files', 'databricks', 's3'].includes(state.source)) {
+      switchSourceTab(state.source);
+    }
+
+    switchTab({ name: tab, historyMode: 'none' });
+
+    if (tab === 'input') {
+      if (state.flow === 'ready') {
+        goToWizardStep(12, { force: true });
+      } else if (state.flow === 'summary') {
+        goToWizardStep(8, { force: true });
+      } else if (state.flow === 'review') {
+        goToWizardStep(2, { force: true });
+      }
+    }
+  } finally {
+    navStateSuspended = false;
+    syncNavigationState('replace');
+  }
+}
+
+function syncNavigationState(mode = 'replace') {
+  if (navStateSuspended) return;
+
+  const state = buildNavigationStateFromUI();
+  const key = navigationStateKey(state);
+  if (key === lastNavStateKey) return;
+
+  const params = new URLSearchParams(window.location.search || '');
+  NAV_STATE_KEYS.forEach(k => params.delete(k));
+  params.set('tab', state.tab || 'input');
+  if (state.tab === 'input' && state.source) params.set('source', state.source);
+  if (state.tab === 'input' && state.flow) params.set('flow', state.flow);
+
+  const next = `${window.location.pathname}?${params.toString()}${window.location.hash || ''}`;
+  if (mode === 'push') history.pushState(state, '', next);
+  else history.replaceState(state, '', next);
+
+  lastNavStateKey = key;
 }
 
 function updateReadyModalContent() {
@@ -618,27 +757,32 @@ function goToDashboardOverview() {
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function switchTab(name) {
+  const opts = (typeof name === 'object') ? name : null;
+  const tabName = opts ? String(opts.name || 'input') : String(name || 'input');
+  const historyMode = opts?.historyMode || 'push';
   const hasData = Object.keys(loadedTables || {}).length > 0;
   const hasScope = selectedAnalyticsTables.size > 0;
-  if ((name === 'qa' || name === 'dashboard') && !hasData) {
+  if ((tabName === 'qa' || tabName === 'dashboard') && !hasData) {
     showError('Load a table to begin.');
     return;
   }
-  if ((name === 'qa' || name === 'dashboard') && hasData && !hasScope) {
+  if ((tabName === 'qa' || tabName === 'dashboard') && hasData && !hasScope) {
     showError('Select at least one table in the Data Input wizard before analytics.');
     return;
   }
 
   document.querySelectorAll('[data-nav-tab]').forEach(t => {
-    t.classList.toggle('active', t.getAttribute('data-nav-tab') === name);
+    t.classList.toggle('active', t.getAttribute('data-nav-tab') === tabName);
   });
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-  document.getElementById(name)?.classList.add('active');
-  if (name === 'qa') {
+  document.getElementById(tabName)?.classList.add('active');
+  if (tabName === 'qa') {
     refreshTableContextBar();
     loadDynamicQuestionChips();
   }
   updateDataInputModalState();
+  updateTableLibraryVisibility();
+  if (historyMode !== 'none') syncNavigationState(historyMode);
 }
 
 function handleLockedNav(event, el) {
@@ -1436,7 +1580,8 @@ function renderTableLibrary() {
   if (!sec || !list) return;
   const names = Object.keys(loadedTables);
   if (!names.length) { sec.style.display = 'none'; return; }
-  sec.style.display = '';
+  updateTableLibraryVisibility();
+  if (sec.style.display === 'none') return;
   setTableLibraryView(tableLibraryView);
 
   const sourceIcon = s => s === 'databricks' ? '🔷' : s === 's3' ? '🟠' : '📄';
@@ -3534,7 +3679,7 @@ function setupScrollReveal() {
 
   updateUploadTypeUI();
   await refreshTableLibrary();
-  switchTab(getInitialTabFromUrl());
+  applyNavigationState(parseNavigationStateFromUrl());
   setTableLibraryView(tableLibraryView);
 
   const railBtn = document.getElementById('railCollapseBtn');
@@ -3623,3 +3768,10 @@ function setupScrollReveal() {
 
   setupScrollReveal();
 })();
+
+window.addEventListener('popstate', (event) => {
+  const state = event?.state && typeof event.state === 'object'
+    ? event.state
+    : parseNavigationStateFromUrl();
+  applyNavigationState(state);
+});
