@@ -54,11 +54,11 @@ const UPLOAD_TYPE_CONFIG = {
 };
 
 const DI_PHASES = [
-  { id: 1, title: 'Connect', what: 'Choose a source and establish data access.', why: 'Connection context determines the safest ingest path.', help: 'Pick Files, Databricks, or AWS S3.' },
-  { id: 2, title: 'Upload and Validate', what: 'Stage files or cloud tables, preview data, and fix issues inline.', why: 'Combining upload and validation reduces click-heavy navigation.', help: 'Add data, review queue and preview, then import.' },
-  { id: 3, title: 'Import', what: 'Run import pipeline and review outcomes.', why: 'Centralized progress and results improve trust and recovery.', help: 'Use retry when issues appear.' },
-  { id: 4, title: 'Configure', what: 'Apply Quick Start or complete advanced analytics setup.', why: 'Setup ensures dashboard and Q&A quality before unlock.', help: 'Quick Start is fastest; Advanced keeps full enterprise control.' },
-  { id: 5, title: 'Analyze', what: 'Finalize setup and move to dashboard insights.', why: 'This unlocks the full analytics workflow.', help: 'Open dashboard and start asking questions.' }
+  { id: 1, title: 'Connect', what: 'Choose where your data comes from.', why: '', help: 'Pick Files, Databricks, or AWS S3.' },
+  { id: 2, title: 'Add Data', what: 'Select file type or connect your source.', why: '', help: 'Load your data and preview it.' },
+  { id: 3, title: 'Import', what: 'Import your selected data.', why: '', help: 'Wait for import to finish.' },
+  { id: 4, title: 'Setup', what: 'Choose quick setup or custom setup.', why: '', help: 'Confirm tables and business terms.' },
+  { id: 5, title: 'Analyze', what: 'Open dashboard and start analysis.', why: '', help: 'Ask questions after setup is complete.' }
 ];
 
 function getWorkflowPhaseFromStage(stage) {
@@ -113,21 +113,87 @@ function renderWizardStepper() {
 function updateUnifiedIntakeVisibility() {
   const isFiles = (selectedDataSource || 'files') === 'files';
   const showExcelMode = isFiles && selectedUploadType === 'excel';
-  const showFileSelection = isFiles;
   const showSheetSelection = showExcelMode && excelImportMode === 'selected' && getPendingExcelFiles().length > 0;
   const showSummary = isFiles && pendingFiles.length > 0;
 
   const stage3 = document.getElementById('diStage3');
-  const stage4 = document.getElementById('diStage4');
   const stage5 = document.getElementById('diStage5');
-  const stage6 = document.getElementById('diStage6');
+  const review = document.getElementById('filesReviewSection');
 
   if (stage3) stage3.style.display = showExcelMode ? '' : 'none';
-  if (stage4) stage4.style.display = showFileSelection ? '' : 'none';
   if (stage5) stage5.style.display = showSheetSelection ? '' : 'none';
-  if (stage6) stage6.style.display = showSummary ? '' : 'none';
+  if (review) review.style.display = showSummary ? '' : 'none';
+
+  const browseBtn = document.getElementById('browseFilesBtn');
+  if (browseBtn) browseBtn.disabled = !isFiles || !selectedUploadType;
+  const clearBtn = document.getElementById('clearFilesBtn');
+  if (clearBtn) clearBtn.disabled = !isFiles || pendingFiles.length === 0;
+  const info = document.getElementById('selectedFilesInfo');
+  if (info) {
+    info.textContent = pendingFiles.length
+      ? `${pendingFiles.length} file${pendingFiles.length > 1 ? 's' : ''} selected`
+      : 'No files selected';
+  }
 
   if (showSummary) renderImportSummary();
+  updateDataInputModalState();
+}
+
+function isVisibleInLayout(el) {
+  if (!el) return false;
+  const style = window.getComputedStyle(el);
+  return style.display !== 'none' && style.visibility !== 'hidden';
+}
+
+function updateDataInputModalState() {
+  const backdrop = document.getElementById('diModalBackdrop');
+  const modal = document.getElementById('diFlowModal');
+  const title = document.getElementById('diFlowModalTitle');
+  const sub = document.getElementById('diFlowModalSub');
+  if (!backdrop || !modal) return;
+  const inputActive = document.getElementById('input')?.classList.contains('active');
+  const review = document.getElementById('filesReviewSection');
+  const stage8 = document.getElementById('diStage8');
+  const stage12 = document.getElementById('diStage12');
+
+  const reviewOpen = isVisibleInLayout(review);
+  const setupOpen = isVisibleInLayout(stage8);
+  const readyOpen = isVisibleInLayout(stage12);
+
+  const open = !!inputActive && (
+    reviewOpen ||
+    setupOpen ||
+    readyOpen
+  );
+
+  if (title && sub) {
+    if (readyOpen) {
+      title.textContent = 'Data is ready';
+      sub.textContent = 'Step 3 of 3';
+    } else if (setupOpen) {
+      title.textContent = 'Import summary';
+      sub.textContent = 'Step 2 of 3';
+    } else {
+      title.textContent = 'Review and import';
+      sub.textContent = 'Step 1 of 3';
+    }
+  }
+
+  backdrop.style.display = open ? '' : 'none';
+  backdrop.classList.toggle('open', open);
+  modal.style.display = open ? '' : 'none';
+  modal.classList.toggle('open', open);
+  modal.setAttribute('aria-hidden', open ? 'false' : 'true');
+  document.body.classList.toggle('di-modal-open', open);
+}
+
+function updateReadyModalContent() {
+  const summary = document.getElementById('diReadySummary');
+  if (!summary) return;
+  const tableCount = selectedAnalyticsTables.size || Object.keys(loadedTables || {}).length;
+  const tableText = `${tableCount} table${tableCount === 1 ? '' : 's'} in analysis scope`;
+  const modeText = quickStartUsed ? 'Quick setup applied' : 'Custom setup applied';
+  summary.textContent = `${tableText} • ${modeText}`;
 }
 
 function showWizardStage(step) {
@@ -144,6 +210,7 @@ function showWizardStage(step) {
       stage1.style.display = '';
       stage1.classList.add('is-active');
     }
+    updateDataInputModalState();
     return;
   }
 
@@ -154,6 +221,7 @@ function showWizardStage(step) {
       stage2.classList.add('is-active');
     }
     updateUnifiedIntakeVisibility();
+    updateDataInputModalState();
     return;
   }
 
@@ -163,6 +231,7 @@ function showWizardStage(step) {
       stage7.style.display = '';
       stage7.classList.add('is-active');
     }
+    updateDataInputModalState();
     return;
   }
 
@@ -172,6 +241,7 @@ function showWizardStage(step) {
       stage8.style.display = '';
       stage8.classList.add('is-active');
     }
+    updateDataInputModalState();
     return;
   }
 
@@ -181,6 +251,7 @@ function showWizardStage(step) {
       active.style.display = '';
       active.classList.add('is-active');
     }
+    updateDataInputModalState();
     return;
   }
 
@@ -188,7 +259,10 @@ function showWizardStage(step) {
   if (stage12) {
     stage12.style.display = '';
     stage12.classList.add('is-active');
+    updateReadyModalContent();
   }
+
+  updateDataInputModalState();
 }
 
 function renderConfigureStepTabs() {
@@ -255,7 +329,7 @@ function continueFromSource() {
 
 function continueFromType() {
   if (selectedDataSource === 'databricks' || selectedDataSource === 's3') {
-    showSuccess('Connect and load data from this source to continue.');
+    showSuccess('Connect and load data from this source.');
     return;
   }
   if (!selectedUploadType) {
@@ -265,7 +339,8 @@ function continueFromType() {
   markWizardStepDone(2);
   if (selectedUploadType === 'excel') {
     goToWizardStep(2, { force: true });
-    showSuccess('Excel detected. Choose Workbook or Selected Sheets mode below.');
+    showSuccess('Excel selected. Choose Workbook mode or Sheet mode.');
+    openFilePicker();
     return;
   }
   goToWizardStep(2, { force: true });
@@ -328,7 +403,7 @@ function continueFromImportResult() {
     persistAnalyticsPreferences();
     syncQAAvailability();
     refreshTableContextBar();
-    showSuccess('Single table detected. Table selection is auto-applied. Continue in Configure for schema and glossary review.');
+    showSuccess('One table found. Selection is done automatically.');
     goToWizardStep(9, { force: true });
     goToAnalyticsFlowStep(2);
     return;
@@ -383,9 +458,9 @@ async function quickStartAfterImport() {
   markWizardStepDone(11);
 
   if (names.length === 1) {
-    showSuccess('Quick Start applied. Analytics metadata was prepared automatically for single-table mode.');
+    showSuccess('Quick setup applied for single table mode.');
   } else {
-    showSuccess('Quick Start applied. Table scope, relationship hints, and glossary suggestions were generated automatically.');
+    showSuccess('Quick setup applied. Table scope and suggestions are ready.');
   }
 
   goToWizardStep(12, { force: true });
@@ -423,6 +498,75 @@ function renderImportSummary() {
   host.innerHTML = cards.map(c => `<div class="di-summary-card"><div class="di-summary-k">${escapeHtml(c.k)}</div><div class="di-summary-v">${escapeHtml(c.v)}</div></div>`).join('');
 }
 
+function updateSetupModeActions(tableCount) {
+  const subtitle = document.getElementById('diSetupModeSubtitle');
+  const countBadge = document.getElementById('diSetupModeCount');
+  const singleTableNotice = document.getElementById('diSingleTableNotice');
+  const quickBtn = document.getElementById('diQuickSetupBtn');
+  const customBtn = document.getElementById('diCustomSetupBtn');
+  const actionRow = customBtn ? customBtn.closest('.di-actions') : null;
+  if (!subtitle || !quickBtn || !customBtn) return;
+
+  const count = Number(tableCount) || 0;
+  if (count === 0) {
+    if (singleTableNotice) {
+      singleTableNotice.style.display = 'none';
+      singleTableNotice.textContent = '';
+    }
+    if (countBadge) {
+      countBadge.style.display = '';
+      countBadge.textContent = '0 tables imported';
+      countBadge.classList.remove('is-ok');
+      countBadge.classList.add('is-warn');
+    }
+    subtitle.textContent = 'No tables were imported. Fix issues and import again.';
+    quickBtn.style.display = 'none';
+    quickBtn.disabled = false;
+    customBtn.textContent = 'Continue';
+    customBtn.disabled = true;
+    if (actionRow) actionRow.classList.remove('di-setup-single');
+    return;
+  }
+
+  if (count === 1) {
+    if (singleTableNotice) {
+      singleTableNotice.style.display = '';
+      singleTableNotice.innerHTML = '<strong>Single table mode</strong><br>This table is already selected. Next, review the schema.';
+    }
+    if (countBadge) {
+      countBadge.style.display = '';
+      countBadge.textContent = '1 table imported';
+      countBadge.classList.remove('is-warn');
+      countBadge.classList.add('is-ok');
+    }
+    subtitle.textContent = 'Single table detected. We will use this table automatically.';
+    quickBtn.style.display = 'none';
+    quickBtn.disabled = false;
+    customBtn.textContent = 'Open schema review';
+    customBtn.disabled = false;
+    if (actionRow) actionRow.classList.add('di-setup-single');
+    return;
+  }
+
+  if (singleTableNotice) {
+    singleTableNotice.style.display = 'none';
+    singleTableNotice.textContent = '';
+  }
+  if (countBadge) {
+    countBadge.style.display = '';
+    countBadge.textContent = `${count} tables imported`;
+    countBadge.classList.remove('is-warn');
+    countBadge.classList.add('is-ok');
+  }
+  subtitle.textContent = 'Multiple tables detected. Choose quick setup or custom setup.';
+  quickBtn.style.display = '';
+  quickBtn.textContent = 'Quick setup (all tables)';
+  quickBtn.disabled = false;
+  customBtn.textContent = 'Custom setup (choose tables)';
+  customBtn.disabled = false;
+  if (actionRow) actionRow.classList.remove('di-setup-single');
+}
+
 function setImportProgress(pct, statusText, activeIndex = 0) {
   const bar = document.getElementById('diProgressBar');
   const pctEl = document.getElementById('diProgressPct');
@@ -441,6 +585,7 @@ function renderImportResult(data = {}) {
   const host = document.getElementById('diImportResult');
   if (!host) return;
   const tables = Array.isArray(data.tables) ? data.tables : [];
+  updateSetupModeActions(tables.length);
   const errors = Array.isArray(data.errors) ? data.errors : [];
   const totalRows = tables.reduce((sum, t) => sum + Number(t.rowCount || 0), 0);
   const hasSuccess = tables.length > 0;
@@ -493,6 +638,7 @@ function switchTab(name) {
     refreshTableContextBar();
     loadDynamicQuestionChips();
   }
+  updateDataInputModalState();
 }
 
 function handleLockedNav(event, el) {
@@ -691,11 +837,6 @@ function clearPendingFiles() {
   pendingFiles = [];
   excelSheetCatalog = {};
   excelSelectedSheets = {};
-
-  const queue = document.getElementById('uploadQueue');
-  if (queue) queue.style.display = 'none';
-  const preview = document.getElementById('previewSection');
-  if (preview) preview.style.display = 'none';
   const excel = document.getElementById('excelImportSection');
   if (excel) excel.style.display = 'none';
 
@@ -704,9 +845,6 @@ function clearPendingFiles() {
     loadBtn.disabled = false;
     loadBtn.textContent = 'Import';
   }
-
-  const continueBtn = document.getElementById('diContinueFileBtn');
-  if (continueBtn) continueBtn.disabled = true;
 
   const input = document.getElementById('fileInput');
   if (input) input.value = '';
@@ -722,9 +860,9 @@ function removePendingFile(idx) {
     delete excelSheetCatalog[key];
     delete excelSelectedSheets[key];
   }
-  renderUploadQueue();
-  renderPreviewFromPendingFiles();
   renderExcelImportSection();
+  updateUnifiedIntakeVisibility();
+  renderImportSummary();
   updateUnifiedIntakeVisibility();
 }
 
@@ -837,70 +975,13 @@ async function renderExcelImportSection() {
 }
 
 function renderPreviewFromPendingFiles() {
-  const continueBtn = document.getElementById('diContinueFileBtn');
-  if (continueBtn) continueBtn.disabled = pendingFiles.length === 0;
-
   if (!pendingFiles.length) {
-    const preview = document.getElementById('previewSection');
-    if (preview) preview.style.display = 'none';
     updateUnifiedIntakeVisibility();
     return;
   }
-
-  const names = pendingFiles.map(f => f.name).join(', ');
-  const last = pendingFiles[pendingFiles.length - 1];
-  if (/\.(csv|tsv)$/i.test(last.name)) {
-    const reader = new FileReader();
-    reader.onload = e => showCSVPreview(e.target.result, last.name);
-    reader.readAsText(last);
-  } else {
-    document.getElementById('previewSection').style.display = '';
-    document.getElementById('previewTable').innerHTML = `<tbody><tr><td colspan="4" style="padding:1rem;color:var(--t2)">${escapeHtml(names)}</td></tr></tbody>`;
-    document.getElementById('rowCount').textContent = pendingFiles.length + ' file(s) staged for upload';
-  }
   updateUnifiedIntakeVisibility();
 }
-
-function renderUploadQueue() {
-  const queueWrap = document.getElementById('uploadQueue');
-  const queueList = document.getElementById('uploadQueueList');
-  if (!queueWrap || !queueList) return;
-  if (pendingFiles.length <= 1) {
-    queueWrap.style.display = 'none';
-    return;
-  }
-
-  queueWrap.style.display = '';
-  queueList.innerHTML = pendingFiles.map((f, idx) => `
-    <div class="upload-row" id="uploadRow_${idx}">
-      <div class="upload-meta">
-        <span class="upload-state-icon" id="uploadState_${idx}">&#9711;</span>
-        <span class="upload-name">${escapeHtml(f.name)}</span>
-        <span class="upload-size">${(f.size / 1024).toFixed(1)} KB</span>
-      </div>
-      <button type="button" class="mini-btn" onclick="removePendingFile(${idx})" style="margin-left:auto">Remove</button>
-      <div class="upload-progress"><span id="uploadBar_${idx}" style="width:0%"></span></div>
-    </div>
-  `).join('');
-}
-
 function setUploadVisualState(state) {
-  pendingFiles.forEach((_, idx) => {
-    const icon = document.getElementById(`uploadState_${idx}`);
-    const bar = document.getElementById(`uploadBar_${idx}`);
-    if (!icon || !bar) return;
-    if (state === 'uploading') {
-      icon.innerHTML = '&#8635;';
-      bar.style.width = '60%';
-    } else if (state === 'done') {
-      icon.innerHTML = '&#10003;';
-      bar.style.width = '100%';
-    } else if (state === 'error') {
-      icon.innerHTML = '&#9888;';
-      bar.style.width = '100%';
-    }
-  });
-
   if (state === 'uploading') setImportProgress(62, 'Importing records...', 4);
   if (state === 'done') setImportProgress(100, 'Finalizing import...', 5);
   if (state === 'error') setImportProgress(100, 'Import failed. Review error details.', 5);
@@ -1216,7 +1297,6 @@ function handleFileInputChange(files) {
     return;
   }
 
-  renderUploadQueue();
   renderPreviewFromPendingFiles();
   renderExcelImportSection();
   markWizardStepDone(2);
@@ -1225,33 +1305,6 @@ function handleFileInputChange(files) {
   updateUnifiedIntakeVisibility();
   const input = document.getElementById('fileInput');
   if (input) input.value = '';
-}
-
-function showCSVPreview(text, filename) {
-  const lines   = text.trim().split(/\r?\n/).filter(l => l.trim()).slice(0, 10);
-  const headers = splitCSVLine(lines[0]);
-  const rows    = lines.slice(1, 8).map(l => splitCSVLine(l));
-  const show    = headers.slice(0, 10);
-  const table   = document.getElementById('previewTable');
-  table.innerHTML = `
-    <thead><tr>${show.map(h=>`<th>${escapeHtml(h)}</th>`).join('')}${headers.length>10?'<th>…</th>':''}</tr></thead>
-    <tbody>${rows.map(r=>`<tr>${show.map((_,i)=>`<td>${escapeHtml(r[i]||'')}</td>`).join('')}${headers.length>10?'<td>…</td>':''}</tr>`).join('')}</tbody>`;
-  document.getElementById('previewSection').style.display = '';
-  document.getElementById('rowCount').textContent = `${filename} • ${lines.length - 1} rows previewed`;
-  const continueBtn = document.getElementById('diContinueFileBtn');
-  if (continueBtn) continueBtn.textContent = pendingFiles.length ? `Continue (${pendingFiles.length} file${pendingFiles.length > 1 ? 's' : ''})` : 'Continue';
-}
-
-function splitCSVLine(line, delim = ',') {
-  const out = []; let field = '', inQ = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') { if (inQ && line[i+1]==='"') { field+='"'; i++; } else inQ=!inQ; }
-    else if (ch === delim && !inQ) { out.push(field.trim()); field=''; }
-    else field += ch;
-  }
-  out.push(field.trim());
-  return out;
 }
 
 async function uploadStagedFiles() {
@@ -1303,7 +1356,7 @@ async function uploadStagedFiles() {
           btn.disabled = false;
           btn.textContent = 'Import';
         }
-        goToWizardStep(6, { force: true });
+        goToWizardStep(2, { force: true });
         return;
       }
     }
@@ -1723,7 +1776,7 @@ function applyAnalyticsSelection() {
   refreshTableContextBar();
   markWizardStepDone(11);
   goToWizardStep(12, { force: true });
-  showSuccess(`Analytics scope applied for ${selectedAnalyticsTables.size} table${selectedAnalyticsTables.size > 1 ? 's' : ''}.`);
+  showSuccess(`Setup applied for ${selectedAnalyticsTables.size} table${selectedAnalyticsTables.size > 1 ? 's' : ''}.`);
 }
 
 function renderAnalyticsFlowSection() {

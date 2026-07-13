@@ -89,8 +89,8 @@
   <div id="input" class="section active">
 
     <div class="section-head">
-      <h2>Data Input</h2>
-      <p>Guided, enterprise-grade data onboarding with clear validation at every step.</p>
+      <h2>Load Data</h2>
+      <p>Add your data, review it, and start analysis.</p>
     </div>
 
     <div class="di-wizard" id="diWizardRoot">
@@ -101,26 +101,26 @@
       </div>
 
       <div class="di-stage card" id="diStage1">
-        <h3 class="di-title">Connect Your Data</h3>
-        <p class="di-subtitle">Choose where your business data is stored. This is the first step before ConvBI can analyze your data.</p>
+        <h3 class="di-title">Connect data</h3>
+        <p class="di-subtitle">Choose where your data comes from.</p>
         <div class="di-source-grid">
           <button class="di-choice-card di-source-card" type="button" data-source-card="files" onclick="selectDataSource('files')">
             <div class="di-emoji">📁</div>
             <div class="di-choice-title">Files</div>
-            <div class="di-choice-sub">Upload local business files.</div>
+            <div class="di-choice-sub">Upload files from your computer.</div>
             <div class="di-choice-list">CSV • Excel • JSON • Parquet</div>
             <span class="di-chip">Select</span>
           </button>
           <button class="di-choice-card di-source-card" type="button" data-source-card="databricks" onclick="selectDataSource('databricks')">
             <div class="di-emoji">🗄️</div>
             <div class="di-choice-title">Databricks</div>
-            <div class="di-choice-sub">Connect directly to your Databricks workspace.</div>
+            <div class="di-choice-sub">Load tables from Databricks.</div>
             <span class="di-chip">Connect</span>
           </button>
           <button class="di-choice-card di-source-card" type="button" data-source-card="s3" onclick="selectDataSource('s3')">
             <div class="di-emoji">☁️</div>
             <div class="di-choice-title">Amazon S3</div>
-            <div class="di-choice-sub">Import datasets from an S3 bucket.</div>
+            <div class="di-choice-sub">Load files from an S3 bucket.</div>
             <span class="di-chip">Connect</span>
           </button>
         </div>
@@ -130,43 +130,53 @@
       </div>
 
       <div class="di-stage card" id="diStage2" style="display:none">
-        <h3 class="di-title">Upload and Validate</h3>
-        <p class="di-subtitle">Choose source details, stage data, preview, validate, and import from one workspace.</p>
+        <h3 class="di-title">Add data</h3>
+        <p class="di-subtitle">Choose type, connect, and load your data.</p>
         <div id="filesPanel">
           <div class="di-filetype-grid">
             <button class="di-choice-card" type="button" data-upload-type="csv" onclick="setUploadType('csv')">
               <div class="di-emoji">📄</div>
               <div class="di-choice-title">CSV</div>
-              <div class="di-choice-sub">Comma-Separated Values</div>
+              <div class="di-choice-sub">Simple spreadsheet format</div>
               <div class="di-choice-list">.csv</div>
             </button>
             <button class="di-choice-card" type="button" data-upload-type="json" onclick="setUploadType('json')">
               <div class="di-emoji">🧾</div>
               <div class="di-choice-title">JSON</div>
-              <div class="di-choice-sub">Structured JavaScript Object Notation</div>
+              <div class="di-choice-sub">Structured text format</div>
               <div class="di-choice-list">.json</div>
             </button>
             <button class="di-choice-card" type="button" data-upload-type="excel" onclick="setUploadType('excel')">
               <div class="di-emoji">📊</div>
               <div class="di-choice-title">Excel</div>
-              <div class="di-choice-sub">Workbook or sheet-based import</div>
+              <div class="di-choice-sub">Workbook or selected sheets</div>
               <div class="di-choice-list">.xlsx, .xls, .xlsm</div>
             </button>
             <button class="di-choice-card" type="button" data-upload-type="parquet" onclick="setUploadType('parquet')">
               <div class="di-emoji">🗂️</div>
               <div class="di-choice-title">Parquet</div>
-              <div class="di-choice-sub">Columnar analytics format</div>
+              <div class="di-choice-sub">Optimized analytics format</div>
               <div class="di-choice-list">.parquet</div>
             </button>
           </div>
           <div class="di-inline-note" id="uploadTypeHint">No type selected</div>
+
+          <div class="di-actions" style="justify-content:flex-start;margin-top:10px">
+            <button class="submit-btn" id="browseFilesBtn" type="button" onclick="openFilePicker()" disabled>Browse files</button>
+            <button class="flow-btn-secondary" id="clearFilesBtn" type="button" onclick="clearPendingFiles()" disabled>Clear</button>
+          </div>
+
+          <div class="di-inline-note" id="selectedFilesInfo">No files selected</div>
+
+          <input type="file" id="fileInput" accept=".csv,.xlsx,.xls,.xlsm,.parquet,.json" multiple style="display:none" onchange="handleFileInputChange(this.files)"/>
+
         </div>
 
         <div id="databricksPanel" class="conn-panel" style="display:none">
           <div class="conn-card">
             <div class="conn-head">
               <div class="conn-title">Databricks</div>
-              <div class="conn-subtitle">Choose a source, connect, and load a table.</div>
+              <div class="conn-subtitle">Connect and load a table.</div>
             </div>
 
             <div class="conn-step-label">1. Choose Connection Source</div>
@@ -239,7 +249,7 @@
           <div class="conn-card">
             <div class="conn-head">
               <div class="conn-title">AWS S3</div>
-              <div class="conn-subtitle">Choose a source, browse files, and load what you need.</div>
+              <div class="conn-subtitle">Connect, browse files, and load data.</div>
             </div>
 
             <div class="conn-step-label">1. Choose Connection Source</div>
@@ -306,8 +316,8 @@
       </div>
 
       <div class="di-stage card" id="diStage3" style="display:none">
-        <h3 class="di-title">Excel Options</h3>
-        <p class="di-subtitle">Choose between full workbook import or selecting specific sheets.</p>
+        <h3 class="di-title">Excel mode</h3>
+        <p class="di-subtitle">Import all sheets or choose specific sheets.</p>
         <div id="excelModePrompt" class="di-filetype-grid" style="margin-top:6px">
           <button class="di-choice-card" id="excelModeWorkbookBtn" type="button" onclick="setExcelImportMode('workbook')">
             <div class="di-choice-title">Workbook Mode</div>
@@ -326,53 +336,9 @@
         </div>
       </div>
 
-      <div class="di-stage card" id="diStage4" style="display:none">
-        <h3 class="di-title">Upload Workspace</h3>
-        <p class="di-subtitle">Choose one or more files, or drag and drop into the upload zone.</p>
-
-        <div class="card" style="padding:10px 12px;margin-bottom:10px;display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap">
-          <div style="font-size:12px;color:var(--t2)">Select files to import.</div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button class="mini-btn" type="button" onclick="openFilePicker()">Add Files</button>
-            <button class="mini-btn" type="button" onclick="clearPendingFiles()">Clear Selection</button>
-          </div>
-        </div>
-
-        <div class="drop-zone" id="dropZone"
-             onclick="openFilePicker()"
-             ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">
-          <svg class="drop-icon" viewBox="0 0 36 36" fill="none">
-            <rect x="4" y="10" width="28" height="20" rx="3" stroke="currentColor" stroke-width="1.5"/>
-            <path d="M18 6v14M13 11l5-5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-          <div class="drop-title">Drop files for selected type</div>
-          <div class="drop-sub">File picker and drag-drop both follow your selected format.</div>
-          <div class="drop-btn">Choose Files</div>
-        </div>
-        <input type="file" id="fileInput" accept=".csv,.xlsx,.xls,.xlsm,.parquet,.json" multiple style="display:none" onchange="handleFileInputChange(this.files)"/>
-
-        <div id="uploadQueue" class="card upload-queue" style="display:none">
-          <div class="queue-head">Upload Queue</div>
-          <div id="uploadQueueList"></div>
-        </div>
-
-        <div id="previewSection" style="display:none">
-          <div class="card">
-            <div style="font-size:13px;font-weight:500;color:var(--t2);margin-bottom:10px">Preview — most recent file</div>
-            <div class="preview-table-wrap"><table id="previewTable"></table></div>
-            <div id="rowCount" class="row-count"></div>
-          </div>
-        </div>
-
-        <div class="di-actions di-legacy-actions">
-          <button class="flow-btn-secondary" type="button" onclick="goBackFromFileSelection()">Back</button>
-          <button class="submit-btn" id="diContinueFileBtn" type="button" onclick="continueFromFileSelection()" disabled>Continue</button>
-        </div>
-      </div>
-
       <div class="di-stage card" id="diStage5" style="display:none">
-        <h3 class="di-title">Excel Sheet Selection</h3>
-        <p class="di-subtitle">Choose the required sheets from each workbook.</p>
+        <h3 class="di-title">Choose sheets</h3>
+        <p class="di-subtitle">Pick the Excel sheets you want to import.</p>
         <div id="excelImportSection" class="card" style="display:block;padding:12px;margin-top:10px">
           <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:space-between;margin-bottom:8px;align-items:center">
             <input id="excelSheetSearch" class="input" placeholder="Search sheets" style="max-width:280px" oninput="filterExcelSheets()" />
@@ -392,19 +358,9 @@
         </div>
       </div>
 
-      <div class="di-stage card" id="diStage6" style="display:none">
-        <h3 class="di-title">Validate and Import</h3>
-        <p class="di-subtitle">Review import readiness and start processing.</p>
-        <div id="diImportSummary" class="di-summary-grid"></div>
-        <div class="di-actions">
-          <button class="flow-btn-secondary" type="button" onclick="goBackFromSummary()">Back</button>
-          <button class="submit-btn" id="loadBtn" type="button" onclick="uploadStagedFiles()">Import</button>
-        </div>
-      </div>
-
       <div class="di-stage card" id="diStage7" style="display:none">
-        <h3 class="di-title">Import Progress</h3>
-        <p class="di-subtitle">Import status updates in real time.</p>
+        <h3 class="di-title">Importing data</h3>
+        <p class="di-subtitle">Please wait while data is imported.</p>
         <div class="di-progress-wrap">
           <div class="di-progress-label" id="diProgressStatus">Reading files...</div>
           <div class="di-progress-bar"><span id="diProgressBar"></span></div>
@@ -413,49 +369,65 @@
         <div class="di-stage-list" id="diProgressStages"></div>
       </div>
 
-      <div class="di-stage card" id="diStage8" style="display:none">
-        <h3 class="di-title">Import Results and Setup Mode</h3>
-        <p class="di-subtitle">Review outcomes, then choose Quick Start or Advanced Setup.</p>
-        <div id="diImportResult"></div>
-        <div class="di-actions">
-          <button class="flow-btn-secondary" type="button" onclick="quickStartAfterImport()">Quick Start</button>
-          <button class="submit-btn" type="button" onclick="continueFromImportResult()">Advanced Setup</button>
-        </div>
-      </div>
 
       <div class="di-stage card" id="diStage9" style="display:none">
-        <h3 class="di-title">Configure Analytics</h3>
-        <p class="di-subtitle">Use one screen for table scope, schema review, and relationships plus glossary setup.</p>
+        <h3 class="di-title">Set up analysis</h3>
+        <p class="di-subtitle">Choose tables, review schema, and confirm business terms.</p>
         <div id="configureStepTabs" class="configure-step-tabs"></div>
         <div id="flowStepSelect" class="flow-panel configure-panel"></div>
         <div id="flowStepStructure" class="flow-panel configure-panel" style="display:none"></div>
         <div id="flowStepRelation" class="flow-panel configure-panel" style="display:none"></div>
       </div>
 
-      <div class="di-stage card" id="diStage10" style="display:none">
-        <h3 class="di-title">Table Structure (Legacy)</h3>
-        <p class="di-subtitle">This section is preserved for backward compatibility.</p>
-        <div id="flowStepStructureLegacy" class="flow-panel"></div>
-      </div>
+    </div>
 
-      <div class="di-stage card" id="diStage11" style="display:none">
-        <h3 class="di-title">Relationships &amp; Glossary (Legacy)</h3>
-        <p class="di-subtitle">This section is preserved for backward compatibility.</p>
-        <div id="flowStepRelationLegacy" class="flow-panel"></div>
-      </div>
-
-      <div class="di-stage card" id="diStage12" style="display:none">
-        <h3 class="di-title">Your data is ready.</h3>
-        <div class="di-complete-grid">
-          <div class="di-complete-item">✓ Files Imported</div>
-          <div class="di-complete-item">✓ Tables Validated</div>
-          <div class="di-complete-item">✓ Schema Verified</div>
-          <div class="di-complete-item">✓ Relationships Configured</div>
-          <div class="di-complete-item">✓ Business Glossary Created</div>
+    <div id="diModalBackdrop" class="di-modal-backdrop" style="display:none" aria-hidden="true"></div>
+    <div id="diFlowModal" class="di-flow-modal" style="display:none" aria-hidden="true" role="dialog" aria-modal="true" aria-label="Data flow">
+      <div class="di-flow-modal-card">
+        <div class="di-flow-modal-head">
+          <div>
+            <div class="di-flow-modal-title" id="diFlowModalTitle">Review and import</div>
+            <div class="di-flow-modal-sub" id="diFlowModalSub">Step 1 of 3</div>
+          </div>
         </div>
-        <p class="di-subtitle" style="margin-top:10px">Continue to Data Profiling and Dashboard analysis.</p>
-        <div class="di-actions">
-          <button class="submit-btn" type="button" onclick="goToDashboardOverview()">Go to Dashboard</button>
+        <div class="di-flow-modal-body">
+          <div id="filesReviewSection" class="card di-modal-card" style="display:none;margin-top:0">
+            <h3 class="di-title" style="font-size:16px">Review and import</h3>
+            <p class="di-subtitle" style="display:block">Check your selection, then import.</p>
+            <div id="diImportSummary" class="di-summary-grid"></div>
+            <div class="di-actions" style="margin-top:10px">
+              <button class="submit-btn" id="loadBtn" type="button" onclick="uploadStagedFiles()">Import</button>
+            </div>
+          </div>
+
+          <div class="di-stage card di-modal-card" id="diStage8" style="display:none">
+            <h3 class="di-title">Import complete</h3>
+            <p class="di-subtitle" id="diSetupModeSubtitle">Choose quick setup or custom setup.</p>
+            <div class="di-setup-count" id="diSetupModeCount" style="display:none"></div>
+            <div class="di-single-table-notice" id="diSingleTableNotice" style="display:none"></div>
+            <div id="diImportResult"></div>
+            <div class="di-actions">
+              <button class="flow-btn-secondary" id="diQuickSetupBtn" type="button" onclick="quickStartAfterImport()">Quick setup</button>
+              <button class="submit-btn" id="diCustomSetupBtn" type="button" onclick="continueFromImportResult()">Custom setup</button>
+            </div>
+          </div>
+
+          <div class="di-stage card di-modal-card" id="diStage12" style="display:none">
+            <h3 class="di-title">Data is ready to analyze</h3>
+            <p class="di-subtitle" style="display:block">Your data is imported and prepared successfully.</p>
+            <div class="di-ready-summary" id="diReadySummary"></div>
+            <div class="di-complete-grid">
+              <div class="di-complete-item">✓ Import completed</div>
+              <div class="di-complete-item">✓ Analysis table scope applied</div>
+              <div class="di-complete-item">✓ Schema and business terms configured</div>
+              <div class="di-complete-item">✓ Dashboard and Q&A are unlocked</div>
+            </div>
+            <p class="di-subtitle" style="margin-top:10px;display:block">Next: open Dashboard or ask a question.</p>
+            <div class="di-actions">
+              <button class="flow-btn-secondary" type="button" onclick="switchTab('qa')">Ask Questions</button>
+              <button class="submit-btn" type="button" onclick="goToDashboardOverview()">Go to Dashboard</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
