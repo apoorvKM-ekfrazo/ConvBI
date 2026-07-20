@@ -14,7 +14,8 @@ let filterMetaByTable = {};
 let activeFiltersByTable = {};
 let currentFilterTable = '';
 let filtersPanelExpanded = false;
-const DENSITY_MODE_KEY = 'convbi_density_mode';
+let dashboardTableScope = new Set(); // tables in scope for Overview/Charts (empty = all)
+const DASHBOARD_SCOPE_KEY = 'convbi_dashboard_table_scope';
 const STORY_DETAILS_KEY = 'convbi_story_show_details';
 const AI_SELECTION_KEY = 'convbi_ai_selection';
 let aiSelection = { provider: '', model: '', strict: true };
@@ -517,6 +518,52 @@ async function initDynamicFiltersUI(tableNames) {
   renderDynamicFiltersUI(chosen);
 }
 
+// ── Table scope (which tables feed Overview KPIs/Story/Charts) ────────────────
+// Unlike dbFilterTableSel (which just picks which table's row-level filters
+// are being edited), this controls scopedNames in loadDashboard() — defaults
+// to ALL loaded tables so the dashboard is never silently pinned to one table.
+function refreshDashboardTableScopeBar(names) {
+  const bar = document.getElementById('dbScopeBar');
+  const chips = document.getElementById('dbScopeChips');
+  if (!bar || !chips) return;
+
+  if (!names.length) {
+    bar.style.display = 'none';
+    dashboardTableScope = new Set();
+    return;
+  }
+
+  // Prune stale entries, default to "all tables" the first time we see this table list.
+  dashboardTableScope = new Set([...dashboardTableScope].filter(n => names.includes(n)));
+  if (!dashboardTableScope.size) {
+    const stored = JSON.parse(localStorage.getItem(DASHBOARD_SCOPE_KEY) || 'null');
+    const restored = Array.isArray(stored) ? stored.filter(n => names.includes(n)) : [];
+    names.forEach(n => { if (!restored.length || restored.includes(n)) dashboardTableScope.add(n); });
+  }
+
+  bar.style.display = names.length > 1 ? '' : 'none';
+  chips.innerHTML = names.map(n =>
+    `<button class="db-ctx-chip ${dashboardTableScope.has(n) ? 'db-ctx-chip-on' : ''}" onclick="toggleDashboardTableScope('${escapeHtml(n)}')">${escapeHtml(prettifyTableLabel(n))}</button>`
+  ).join('');
+}
+
+function toggleDashboardTableScope(name) {
+  if (dashboardTableScope.has(name)) {
+    if (dashboardTableScope.size <= 1) return; // keep at least one table in scope
+    dashboardTableScope.delete(name);
+  } else {
+    dashboardTableScope.add(name);
+  }
+  localStorage.setItem(DASHBOARD_SCOPE_KEY, JSON.stringify([...dashboardTableScope]));
+  loadDashboard();
+}
+
+function selectAllDashboardTables() {
+  dashboardTableScope = new Set(Object.keys(loadedTables));
+  localStorage.setItem(DASHBOARD_SCOPE_KEY, JSON.stringify([...dashboardTableScope]));
+  loadDashboard();
+}
+
 function applyDynamicFilters() {
   if (!currentFilterTable) return;
   activeFiltersByTable[currentFilterTable] = collectFiltersFromUI(currentFilterTable);
@@ -678,23 +725,22 @@ function _normalizeOption(option, renderOpts = {}) {
           : (val && typeof val === 'object' && val.value !== undefined ? val.value : val);
 
         const formatted = formatCompactValue(raw);
-        if (seriesType === 'pie') {
-          const name = String(params?.name || '').trim();
-          return name ? `${name}: ${formatted}` : formatted;
-        }
+        // Pie/donut names already appear in the legend below the chart — showing
+        // them again on the slice label duplicated text and caused the leader
+        // lines/legend to overlap, so slice labels carry only the value.
         return formatted;
       };
 
       // Let ECharts resolve collisions between nearby labels.
       s.labelLayout = {
         ...(s.labelLayout || {}),
-        hideOverlap: false,
+        hideOverlap: seriesType === 'pie',
         moveOverlap: seriesType === 'pie' ? 'shiftY' : 'shiftX'
       };
 
       if (seriesType === 'pie') {
         s.label.overflow = 'truncate';
-        s.label.width = s.label.width || 130;
+        s.label.width = s.label.width || 90;
       }
     }
   });
@@ -1679,19 +1725,6 @@ function toggleHistory() {
   }
 }
 
-function applyDashboardDensityMode(mode, persist = true) {
-  const next = mode === 'comfortable' ? 'comfortable' : 'compact';
-  document.body.classList.toggle('density-compact', next === 'compact');
-  const btn = document.getElementById('dbDensityToggleBtn');
-  if (btn) btn.textContent = next === 'compact' ? 'Comfortable' : 'Compact';
-  if (persist) localStorage.setItem(DENSITY_MODE_KEY, next);
-}
-
-function toggleDashboardDensityMode() {
-  const isCompact = document.body.classList.contains('density-compact');
-  applyDashboardDensityMode(isCompact ? 'comfortable' : 'compact');
-}
-
 function toggleStoryDetails(forceState) {
   const card = document.getElementById('storyCard');
   const btn = document.getElementById('storyToggleBtn');
@@ -1752,9 +1785,8 @@ async function loadDashboard() {
   } catch (_) { loadedTables = {}; }
 
   const names = Object.keys(loadedTables);
-  const scopedNames = (currentFilterTable && names.includes(currentFilterTable))
-    ? [currentFilterTable]
-    : names;
+  refreshDashboardTableScopeBar(names);
+  const scopedNames = names.filter(n => dashboardTableScope.has(n));
   workflowState.step1 = names.length > 0;
   populateTableSelector(names);
   initDynamicFiltersUI(names).catch(() => {
@@ -1778,20 +1810,29 @@ async function loadDashboard() {
   workflowState.step2 = Object.values(loadedTables).some(t => Array.isArray(t.columns) && t.columns.length > 0);
   workflowState.step3 = hasBusinessSignals(samples);
 
-  await renderKPIStrip(samples);
   renderRelationshipMap(scopedNames, relData);
-  const sharedSmartDefs = await fetchRecommendedSmartCharts(scopedNames, 6);
-  const [overviewCount, chartCount] = await Promise.all([
-    renderSmartCharts(scopedNames, 'overviewCharts', 2, samples, sharedSmartDefs),
-    renderSmartCharts(scopedNames, 'chartsSection', 6, samples, sharedSmartDefs)
-  ]);
-  workflowState.step4 = (overviewCount + chartCount) > 0;
+
+  // KPIs, charts, and the data story each make their own independent LLM
+  // call and don't need each other's results — run them concurrently instead
+  // of as a sequential waterfall (previously: KPI -> charts -> story, each
+  // one waiting on the last).
+  const kpiPromise = renderKPIStrip(samples);
+  const chartsPromise = (async () => {
+    const sharedSmartDefs = await fetchRecommendedSmartCharts(scopedNames, 6);
+    const [overviewCount, chartCount] = await Promise.all([
+      renderSmartCharts(scopedNames, 'overviewCharts', 2, samples, sharedSmartDefs),
+      renderSmartCharts(scopedNames, 'chartsSection', 6, samples, sharedSmartDefs)
+    ]);
+    return overviewCount + chartCount;
+  })();
+  const storyPromise = generateDataStory(samples, scopedNames);
+
+  const [, chartTotal] = await Promise.all([kpiPromise, chartsPromise]);
+  workflowState.step4 = chartTotal > 0;
   renderWorkflowCoverage();
   renderHistory();
   renderInsights();
-
-  // Data story (async — LLM call)
-  generateDataStory(samples, scopedNames);
+  storyPromise.catch(() => {});
 
   document.getElementById('dbLastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
 }
@@ -2012,16 +2053,11 @@ async function renderKPIStrip(samples) {
   const clsMap   = { up: 'kpi-trend-up', down: 'kpi-trend-down', flat: 'kpi-trend-flat' };
 
   el.innerHTML = topKPIs.slice(0, 4).map(k => `
-    <div class="kpi-card" onclick="filterByKPI('${escapeHtml(k.label)}')" title="${escapeHtml(`Source: ${k.table || 'all'}${k._why ? `\nAI reason: ${k._why}` : ''}`)}">
+    <div class="kpi-card" title="${escapeHtml(`Source: ${k.table || 'all'}${k._why ? `\nAI reason: ${k._why}` : ''}`)}">
       <div class="kpi-label">${escapeHtml(k.label)}</div>
       <div class="kpi-value">${escapeHtml(k.value)}</div>
       <div class="kpi-trend ${clsMap[k.trend]}">${arrowMap[k.trend]} ${k.pct}% vs prev period</div>
     </div>`).join('');
-}
-
-function filterByKPI(label) {
-  // Navigate to charts section filtered by this KPI
-  showSection('charts');
 }
 
 // ── Data story ────────────────────────────────────────────────────────────────
@@ -2582,9 +2618,9 @@ function buildAreaOption(labels, values, seriesName = 'Value') {
 function buildDonutOption(labels, values) {
   return {
     tooltip: { trigger:'item', backgroundColor:'#FFFFFF', borderColor:'#E5E7EB', textStyle:{color:'#111827'} },
-    legend: { orient:'vertical', right:10, top:'center', ...DARK_LEGEND },
+    legend: { orient:'horizontal', bottom:0, left:'center', type:'scroll', ...DARK_LEGEND },
     series: [{
-      type:'pie', radius:['40%','70%'], center:['40%','50%'],
+      type:'pie', radius:['38%','65%'], center:['50%','42%'],
       data: labels.map((l,i) => ({ name:l, value:values[i], itemStyle:{color:DARK_COLORS[i%DARK_COLORS.length]} })),
       label:{ color:'#6B7280', fontSize:11 },
       labelLine:{lineStyle:{color:'#E5E7EB'}}
@@ -2595,12 +2631,12 @@ function buildDonutOption(labels, values) {
 function buildRoseOption(labels, values) {
   return {
     tooltip: { trigger:'item', backgroundColor:'#FFFFFF', borderColor:'#E5E7EB', textStyle:{color:'#111827'} },
-    legend: { orient:'vertical', right:10, top:'center', ...DARK_LEGEND },
+    legend: { orient:'horizontal', bottom:0, left:'center', type:'scroll', ...DARK_LEGEND },
     series: [{
       type:'pie',
       roseType:'radius',
-      radius:['20%','72%'],
-      center:['40%','50%'],
+      radius:['18%','62%'],
+      center:['50%','42%'],
       data: labels.map((l,i) => ({ name:l, value:values[i], itemStyle:{color:DARK_COLORS[i%DARK_COLORS.length]} })),
       label:{ color:'#6B7280', fontSize:11 },
       labelLine:{ lineStyle:{ color:'#E5E7EB' } }
@@ -2802,10 +2838,27 @@ window.addEventListener('hashchange', () => {
   applySidebarState(false);
 })();
 
+// ── Theme (light/dark) — shared with the Data Input page via localStorage ─────
+(function() {
+  const themeBtn = document.getElementById('dbThemeToggleBtn');
+  const applyTheme = (dark) => {
+    document.body.classList.toggle('theme-dark', dark);
+    if (themeBtn) themeBtn.innerHTML = dark ? '&#9790;' : '&#9788;';
+  };
+  themeBtn?.addEventListener('click', () => {
+    const nextDark = !document.body.classList.contains('theme-dark');
+    localStorage.setItem('convbi_theme', nextDark ? 'dark' : 'light');
+    applyTheme(nextDark);
+  });
+  applyTheme(localStorage.getItem('convbi_theme') === 'dark');
+  window.addEventListener('storage', e => {
+    if (e.key === 'convbi_theme') applyTheme(e.newValue === 'dark');
+  });
+})();
+
 setupSidebarHoverBehavior();
 
 document.getElementById('sidebarPinBtn')?.addEventListener('click', toggleSidebar);
-document.getElementById('dbDensityToggleBtn')?.addEventListener('click', toggleDashboardDensityMode);
 document.getElementById('dbHistoryToggleBtn')?.addEventListener('click', toggleHistory);
 document.addEventListener('click', closeAllChartMenus);
 
@@ -2830,7 +2883,6 @@ document.addEventListener('keydown', e => {
 filtersPanelExpanded = localStorage.getItem('convbi_filters_expanded') === 'true';
 updateFiltersPanelState();
 refreshFilterChip();
-applyDashboardDensityMode(localStorage.getItem(DENSITY_MODE_KEY) || 'compact', false);
 const storyDetailsPref = localStorage.getItem(STORY_DETAILS_KEY);
 toggleStoryDetails(storyDetailsPref === null ? false : storyDetailsPref !== 'true');
 

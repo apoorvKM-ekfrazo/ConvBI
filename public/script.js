@@ -21,7 +21,6 @@ let analyticsFlowStep = 1;
 let selectedAnalyticsTables = new Set();
 let glossaryMap = {};
 const SIDEBAR_PIN_KEY = 'convbi_sidebar_pinned';
-const DENSITY_MODE_KEY = 'convbi_density_mode';
 const QA_DETAILS_KEY = 'convbi_qa_show_details';
 const TABLE_LIBRARY_EXPANDED_KEY = 'convbi_table_library_expanded';
 const AI_SELECTION_KEY = 'convbi_ai_selection';
@@ -678,7 +677,21 @@ function continueFromImportResult() {
   goToAnalyticsFlowStep(1);
 }
 
-async function quickStartAfterImport() {
+async function autoFinishDataInput(message, opts = {}) {
+  const onStatus = typeof opts.onStatus === 'function'
+    ? opts.onStatus
+    : (text) => setImportProgress(99, text, 5);
+
+  onStatus('Selecting tables for analysis...');
+  await quickStartAfterImport({ silent: true, onStatus });
+  onStatus('Opening your dashboard...');
+  if (message) showSuccess(message);
+  goToDashboardOverview();
+}
+
+async function quickStartAfterImport(opts = {}) {
+  const silent = !!opts.silent;
+  const onStatus = typeof opts.onStatus === 'function' ? opts.onStatus : () => {};
   quickStartUsed = true;
   const names = Object.keys(loadedTables || {});
   if (!names.length) {
@@ -689,6 +702,7 @@ async function quickStartAfterImport() {
   selectedAnalyticsTables = new Set(names);
   activeTableSet = new Set(selectedAnalyticsTables);
 
+  onStatus('Detecting relationships between tables...');
   let joins = [];
   try {
     const relRes = await fetch(`${API}/api/detect-relationships`, {
@@ -702,6 +716,7 @@ async function quickStartAfterImport() {
     joins = [];
   }
 
+  onStatus('Building business glossary...');
   const commons = detectCommonColumns(names);
   const glossaryCandidates = getGlossaryCandidateColumns(names, joins, commons, false);
   glossaryCandidates.forEach(key => {
@@ -712,6 +727,7 @@ async function quickStartAfterImport() {
     }
   });
 
+  onStatus('Finalizing analysis setup...');
   persistAnalyticsPreferences();
   syncQAAvailability();
   refreshTableContextBar();
@@ -721,6 +737,8 @@ async function quickStartAfterImport() {
   markWizardStepDone(9);
   markWizardStepDone(10);
   markWizardStepDone(11);
+
+  if (silent) return;
 
   if (names.length === 1) {
     showSuccess('Quick setup applied for single table mode.');
@@ -949,19 +967,6 @@ function updateLoadedTablesBadge() {
   if (ctx) {
     ctx.textContent = names.length ? `Active tables: ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` +${names.length - 3}` : ''}` : 'Active tables: none';
   }
-}
-
-function applyDensityMode(mode, persist = true) {
-  const next = mode === 'comfortable' ? 'comfortable' : 'compact';
-  document.body.classList.toggle('density-compact', next === 'compact');
-  const btn = document.getElementById('densityToggleBtn');
-  if (btn) btn.textContent = next === 'compact' ? 'Comfortable' : 'Compact';
-  if (persist) localStorage.setItem(DENSITY_MODE_KEY, next);
-}
-
-function toggleDensityMode() {
-  const isCompact = document.body.classList.contains('density-compact');
-  applyDensityMode(isCompact ? 'comfortable' : 'compact');
 }
 
 function toggleQADetails(forceState) {
@@ -1325,11 +1330,33 @@ function getDynamicChipFallback() {
   ];
 }
 
+// Take a round-robin slice across categories so the mix stays varied
+// instead of exhausting the first category, capped at maxTotal overall.
+function capTotalPrompts(categories, maxTotal = 5) {
+  const cats = categories.map(c => ({ label: c.label, prompts: Array.isArray(c.prompts) ? c.prompts : [] }));
+  const result = cats.map(c => ({ label: c.label, prompts: [] }));
+  let total = 0;
+  let round = 0;
+  while (total < maxTotal) {
+    let addedThisRound = false;
+    for (let i = 0; i < cats.length && total < maxTotal; i++) {
+      if (cats[i].prompts[round] !== undefined) {
+        result[i].prompts.push(cats[i].prompts[round]);
+        total++;
+        addedThisRound = true;
+      }
+    }
+    if (!addedThisRound) break;
+    round++;
+  }
+  return result.filter(c => c.prompts.length);
+}
+
 function renderDynamicQuestionChips(categories) {
   const host = document.getElementById('dynamicQuestionChips');
   if (!host) return;
 
-  const safeCategories = Array.isArray(categories) ? categories : [];
+  const safeCategories = capTotalPrompts(Array.isArray(categories) ? categories : [], 5);
   if (!safeCategories.length) {
     host.innerHTML = '<div class="chip-category"><div class="chip-category-label">Suggested Questions</div><div class="chip-row"><span style="font-size:12px;color:var(--t2)">No suggestions available yet.</span></div></div>';
     return;
@@ -1590,6 +1617,12 @@ async function uploadStagedFiles() {
     btn.textContent = 'Importing...';
   }
 
+  // Close the review modal now (not just once upload finishes) so the
+  // progress screen underneath is actually visible instead of a stale
+  // "Review and import" panel with only the button text changed.
+  const review = document.getElementById('filesReviewSection');
+  if (review) review.style.display = 'none';
+
   markWizardStepDone(6);
   goToWizardStep(7, { force: true });
   setImportProgress(8, 'Reading files...', 0);
@@ -1653,14 +1686,16 @@ async function uploadStagedFiles() {
     markWizardStepDone(8);
 
     lastImportResult = data;
-    renderImportResult(data);
-
     clearPendingFiles();
+    await refreshTableLibrary();
 
     const count = data.tables.length;
-    showSuccess(`${count} table${count>1?'s':''} loaded. Continue with table selection workflow.`);
-    await refreshTableLibrary();
-    goToWizardStep(8, { force: true });
+    if (count > 0) {
+      await autoFinishDataInput(`${count} table${count > 1 ? 's' : ''} loaded and ready to explore.`);
+    } else {
+      renderImportResult(data);
+      goToWizardStep(8, { force: true });
+    }
   } catch (e) {
     setUploadVisualState('error');
     showError('Upload error: ' + e.message);
@@ -1685,6 +1720,13 @@ async function refreshTableLibrary() {
     loadedTables = data.tables || {};
     loadAnalyticsPreferences();
     selectedAnalyticsTables = new Set([...selectedAnalyticsTables].filter(t => loadedTables[t]));
+    // Default the analytics scope to every loaded table so Ask Questions/Dashboard
+    // unlock as soon as data exists — users shouldn't have to complete the
+    // Table Selection wizard step just to stop the "select tables first" guard.
+    // They can still narrow the scope later via Table Selection or the context chips.
+    if (!selectedAnalyticsTables.size && Object.keys(loadedTables).length) {
+      selectedAnalyticsTables = new Set(Object.keys(loadedTables));
+    }
     activeTableSet = new Set(selectedAnalyticsTables);
     persistAnalyticsPreferences();
     renderTableLibrary();
@@ -1826,7 +1868,7 @@ function renderAnalyticsFlowStepSelect() {
         return `<div class="flow-table-item ${checked ? 'active' : ''}" data-flow-table="${escapeHtml(name).toLowerCase()}" onclick="toggleAnalyticsTable('${escapeHtml(name)}')">
           <div class="flow-table-head">
             <input type="checkbox" ${checked ? 'checked' : ''} tabindex="-1" aria-hidden="true" />
-            <div class="flow-table-name">${escapeHtml(name)}</div>
+            <div class="flow-table-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
           </div>
         </div>`;
       }).join('')}
@@ -1901,18 +1943,23 @@ async function renderAnalyticsStructureStep() {
 }
 
 function detectCommonColumns(tableNames) {
+  // Normalize aggressively (strip case, spaces, underscores, dashes) so
+  // "Product ID" / "product_id" / "ProductId" are recognized as the same
+  // column instead of only matching on exact lowercase name.
   const map = {};
   tableNames.forEach(t => {
     (loadedTables[t]?.columns || []).forEach(c => {
-      const key = String(c.name || '').toLowerCase();
+      const rawName = String(c.name || '').trim();
+      if (!rawName) return;
+      const key = rawName.toLowerCase().replace(/[^a-z0-9]/g, '');
       if (!key) return;
-      if (!map[key]) map[key] = [];
-      map[key].push(t);
+      if (!map[key]) map[key] = { label: rawName, tables: new Set() };
+      map[key].tables.add(t);
     });
   });
-  return Object.entries(map)
-    .filter(([, tables]) => tables.length > 1)
-    .map(([col, tables]) => ({ col, tables }))
+  return Object.values(map)
+    .filter(entry => entry.tables.size > 1)
+    .map(entry => ({ col: entry.label, tables: [...entry.tables] }))
     .sort((a, b) => b.tables.length - a.tables.length)
     .slice(0, 20);
 }
@@ -2849,7 +2896,17 @@ function chartAnswer(cardId) {
   const card = document.getElementById(cardId);
   if (!card) return;
   const cw = card.querySelector('.ec-chart-wrap');
-  if (cw) cw.style.display = cw.style.display === 'none' ? '' : 'none';
+  if (!cw) return;
+  const nowVisible = cw.style.display === 'none';
+  cw.style.display = nowVisible ? '' : 'none';
+  // The chart was echarts.init()'d while this wrapper was still display:none
+  // (zero size), which bakes in a broken layout (crammed axis ticks, etc.) —
+  // resize() once it's actually visible so it lays out against real dimensions.
+  if (nowVisible) {
+    const chartEl = cw.querySelector('[id^="ec_"]');
+    const inst = chartEl?._chart;
+    if (inst) requestAnimationFrame(() => inst.resize());
+  }
 }
 
 async function exportAnswerReport(cardId) {
@@ -2939,6 +2996,19 @@ function hasLewSections(text) {
 
 const pendingECharts = [];
 
+// Compact tick labels (1.2K, 3.4M, ...) instead of raw floats with long
+// repeating-decimal tails (e.g. 288.166666666), which is what made these
+// answer charts look messy/illegible.
+function formatCompactAxisValue(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value ?? '');
+  const abs = Math.abs(n);
+  if (abs >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (abs >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (abs >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
+  return Number.isInteger(n) ? String(n) : n.toFixed(1);
+}
+
 function buildEChartsHtml(columns, rows, question) {
   if (!rows || rows.length < 2) return '';
   const id = 'ec_' + Date.now() + '_' + Math.floor(Math.random()*9999);
@@ -2948,13 +3018,14 @@ function buildEChartsHtml(columns, rows, question) {
   const catCols  = columns.filter(c => !numCols.find(n=>n.name===c.name) && !dateCols.find(n=>n.name===c.name));
 
   let option = null;
+  const valueAxisLabel = { fontSize: 11, formatter: formatCompactAxisValue };
 
   if (dateCols.length && numCols.length) {
     const xCol = dateCols[0].name;
     option = {
-      grid: {top:30,right:20,bottom:40,left:60},
+      grid: {top:30,right:20,bottom:40,left:60,containLabel:true},
       xAxis: {type:'category',data:rows.map(r=>String(r[xCol]).slice(0,7)),axisLabel:{fontSize:11,rotate:rows.length>10?30:0}},
-      yAxis: {type:'value',axisLabel:{fontSize:11}},
+      yAxis: {type:'value',axisLabel:valueAxisLabel},
       legend: numCols.length>1 ? {top:5} : {show:false},
       series: numCols.slice(0,4).map((c,i) => ({
         name: c.name, type:'line',
@@ -2968,19 +3039,19 @@ function buildEChartsHtml(columns, rows, question) {
     const xCol = catCols[0].name, yCol = numCols[0].name;
     const limited = rows.slice(0, 20);
     option = {
-      grid: {top:30,right:20,bottom:50,left:70},
+      grid: {top:30,right:20,bottom:50,left:70,containLabel:true},
       xAxis: {type:'category',data:limited.map(r=>String(r[xCol])),axisLabel:{fontSize:11,rotate:limited.length>8?30:0}},
-      yAxis: {type:'value',axisLabel:{fontSize:11}},
+      yAxis: {type:'value',axisLabel:valueAxisLabel},
       series: [{type:'bar',data:limited.map(r=>r[yCol]),
         itemStyle:{color:'#7A2F8F',borderRadius:[4,4,0,0]},
-        label:{show:limited.length<=12,position:'top',fontSize:10}}],
+        label:{show:limited.length<=12,position:'top',fontSize:10,formatter:p=>formatCompactAxisValue(p.value)}}],
       tooltip:{trigger:'axis'}
     };
   } else if (numCols.length === 2 && rows.length >= 5) {
     option = {
-      grid: {top:30,right:20,bottom:40,left:60},
-      xAxis: {type:'value',name:numCols[0].name,nameLocation:'middle',nameGap:25,axisLabel:{fontSize:11}},
-      yAxis: {type:'value',name:numCols[1].name,nameLocation:'middle',nameGap:40,axisLabel:{fontSize:11}},
+      grid: {top:30,right:20,bottom:40,left:60,containLabel:true},
+      xAxis: {type:'value',name:numCols[0].name,nameLocation:'middle',nameGap:25,axisLabel:valueAxisLabel},
+      yAxis: {type:'value',name:numCols[1].name,nameLocation:'middle',nameGap:40,axisLabel:valueAxisLabel},
       series: [{type:'scatter',data:rows.map(r=>[r[numCols[0].name],r[numCols[1].name]]),
         itemStyle:{color:'#7A2F8F',opacity:0.7}}],
       tooltip:{trigger:'item'}
@@ -3455,13 +3526,16 @@ async function loadDatabricksTable() {
     if (_dbConnMode === 'new') await loadDbProfiles('new');
 
     const rowCount = Number(tables[0]?.rowCount || 0);
-    showSuccess(`Table "${table}" loaded${rowCount ? ` - ${rowCount} rows.` : '.'}`);
-    setDbStatus('connected', `Table "${table}" loaded successfully.`);
     await refreshTableLibrary();
     markWizardStepDone(7);
     markWizardStepDone(8);
-    renderImportResult({ tables, errors: data.errors || [] });
-    goToWizardStep(8, { force: true });
+    if (btn) btn.textContent = 'Preparing dashboard...';
+    await autoFinishDataInput(`Table "${table}" loaded${rowCount ? ` - ${rowCount} rows.` : '.'} Dashboard is ready.`, {
+      onStatus: (text) => {
+        setDbStatus('checking', text);
+        if (btn) btn.textContent = text;
+      }
+    });
   } catch (e) {
     showError('Load error: ' + (e.message || 'Databricks table load failed.'));
     setDbStatus('error', 'Load failed. Please retry.');
@@ -3724,23 +3798,21 @@ async function loadS3File(key, btn) {
 
     const tables = data.tables || [];
     const names = tables.map(t => t.tableName || t.name || t).join(', ');
-    showSuccess(`Loaded from S3: ${names || key}`);
     if (data.usedProfileId) _s3SelectedProfileId = data.usedProfileId;
     if (_s3ConnMode === 'new') {
       loadS3Profiles('new').catch(() => {});
     }
     if (btn) {
-      btn.classList.remove('is-loading');
-      btn.textContent = 'Loaded';
-      btn.classList.add('is-loaded');
+      btn.classList.add('is-loading', 'is-loaded');
       btn.disabled = true;
     }
 
     await refreshTableLibrary();
     markWizardStepDone(7);
     markWizardStepDone(8);
-    renderImportResult({ tables, errors: [] });
-    goToWizardStep(8, { force: true });
+    await autoFinishDataInput(`Loaded from S3: ${names || key}. Dashboard is ready.`, {
+      onStatus: (text) => { if (btn) btn.textContent = text; }
+    });
   } catch (e) {
     showError('S3 load failed: ' + (e.message || 'Unknown error'));
     if (btn) {
@@ -3780,6 +3852,14 @@ function setupScrollReveal() {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 (async () => {
+  // Suppress URL/history writes during early wizard setup below — several of
+  // these calls (goToWizardStep -> showWizardStage -> updateDataInputModalState)
+  // push navigation state built from the DOM's default "input" section before
+  // applyNavigationState() below has had a chance to read and honor the
+  // original ?tab=qa (etc.) query string, which was clobbering deep links /
+  // the Dashboard's "Ask about this" link back to the Data Input tab.
+  navStateSuspended = true;
+
   loadAiSelection();
   await loadAiOptions();
 
@@ -3849,9 +3929,6 @@ function setupScrollReveal() {
   syncRailShellState();
 
   const themeBtn = document.getElementById('themeToggleBtn');
-  const densityBtn = document.getElementById('densityToggleBtn');
-  densityBtn?.addEventListener('click', toggleDensityMode);
-  applyDensityMode(localStorage.getItem(DENSITY_MODE_KEY) || 'compact', false);
 
   themeBtn?.addEventListener('click', () => {
     const nextDark = !document.body.classList.contains('theme-dark');

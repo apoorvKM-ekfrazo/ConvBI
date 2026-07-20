@@ -55,10 +55,10 @@
           <option value="">AI model...</option>
         </select>
         <span id="dbAiModelStatus" class="db-updated-time">AI: loading...</span>
-        <button class="db-topbar-btn" id="dbDensityToggleBtn" type="button">Compact</button>
         <button class="db-topbar-btn" id="dbHistoryToggleBtn" type="button">History</button>
         <button class="db-topbar-btn" onclick="window.location.href='/?tab=qa'">Ask about this</button>
         <span id="dbLastUpdated" class="db-updated-time"></span>
+        <button class="db-topbar-btn db-theme-toggle" id="dbThemeToggleBtn" type="button" title="Toggle light or dark mode" aria-label="Toggle light or dark mode">&#9788;</button>
         <button class="db-topbar-btn" onclick="loadDashboard()">↺ Refresh</button>
       </div>
     </header>
@@ -69,6 +69,14 @@
       <button class="db-section-tab" data-section="tables" type="button" onclick="showSection('tables')">Table Explorer</button>
       <button class="db-section-tab" data-section="insights" type="button" onclick="showSection('insights')">Insights</button>
     </nav>
+
+    <section class="db-scope-shell" id="dbScopeBar" style="display:none">
+      <div class="db-scope-head">
+        <span class="db-scope-title">Tables in scope</span>
+        <button class="db-topbar-btn" type="button" onclick="selectAllDashboardTables()">Select all</button>
+      </div>
+      <div class="db-ctx-chips" id="dbScopeChips"></div>
+    </section>
 
     <section class="db-filters-shell" id="dbFiltersShell">
       <div class="db-filters-head db-filters-head-compact">

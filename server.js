@@ -20,7 +20,7 @@ const OPENAI_ENDPOINT      = process.env.OPENAI_ENDPOINT      || 'https://api.op
 const GROQ_ENDPOINT        = process.env.GROQ_ENDPOINT        || 'https://api.groq.com/openai/v1/chat/completions';
 
 const ENABLE_OPENAI = String(process.env.ENABLE_OPENAI || 'true').toLowerCase() !== 'false';
-const PROVIDER_ORDER = (process.env.AI_PROVIDER_ORDER || 'groq,openai')
+const PROVIDER_ORDER = (process.env.AI_PROVIDER_ORDER || 'openai,groq')
   .split(',')
   .map(s => s.trim().toLowerCase())
   .filter(Boolean)
@@ -57,7 +57,22 @@ function putQueryCache(key, value) {
   saveQueryCache();
 }
 
-const MODEL_CANDIDATES = [process.env.OPENAI_MODEL || 'gpt-4.1-mini', process.env.OPENAI_FALLBACK_MODEL || 'gpt-4o'];
+// ── In-memory cache for dashboard AI calls (KPI/visual/chart-interpret/story) ─
+// Not persisted to disk — cheap to regenerate on restart, and these change
+// whenever the underlying data does. Avoids re-hitting the LLM on every
+// dashboard refresh when nothing about the table/schema has changed.
+const aiJsonCache = new Map();
+const AI_JSON_CACHE_MAX = 300;
+function aiCacheKey(route, payload, aiCfg = {}) {
+  const stable = JSON.stringify(payload) + '|' + (aiCfg.forcedProvider || '') + '|' + (aiCfg.forcedModel || '');
+  return crypto.createHash('sha256').update(`${route}|${stable}`).digest('hex').slice(0, 40);
+}
+function putAiJsonCache(key, value) {
+  if (aiJsonCache.size >= AI_JSON_CACHE_MAX) aiJsonCache.delete(aiJsonCache.keys().next().value);
+  aiJsonCache.set(key, value);
+}
+
+const MODEL_CANDIDATES = [process.env.OPENAI_MODEL || 'gpt-4o-mini', process.env.OPENAI_FALLBACK_MODEL || 'gpt-4.1-mini'];
 const COMPLEX_MODEL    = process.env.OPENAI_COMPLEX_MODEL || 'gpt-4o';
 
 const GROQ_MODEL           = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
@@ -73,8 +88,8 @@ function parseCsvList(value = '') {
 
 const OPENAI_ALLOWED_MODELS = parseCsvList(
   process.env.OPENAI_ALLOWED_MODELS || [
-    process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-    process.env.OPENAI_FALLBACK_MODEL || 'gpt-4o',
+    process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    process.env.OPENAI_FALLBACK_MODEL || 'gpt-4.1-mini',
     process.env.OPENAI_COMPLEX_MODEL || 'gpt-4o'
   ].join(',')
 );
@@ -1493,6 +1508,9 @@ app.post('/api/recommend-kpis', async (req, res) => {
     }));
 
     const aiCfg = getAiRequestConfig(req);
+    const cacheKey = aiCacheKey('recommend-kpis', compactTables, aiCfg);
+    const cached = aiJsonCache.get(cacheKey);
+    if (cached) return res.json(cached);
     const aiOut = await requestViaProviderManager({
       ...aiCfg,
       messages: [
@@ -1533,7 +1551,9 @@ app.post('/api/recommend-kpis', async (req, res) => {
       }
     }
 
-    return res.json({ kpis: selected, mode: 'ai', provider: aiOut.provider, model: aiOut.model });
+    const payload = { kpis: selected, mode: 'ai', provider: aiOut.provider, model: aiOut.model };
+    putAiJsonCache(cacheKey, payload);
+    return res.json(payload);
   } catch (e) {
     console.error('[/api/recommend-kpis] error:', e.message);
     return res.status(500).json({ error: e.message });
@@ -1571,6 +1591,9 @@ app.post('/api/recommend-visuals', async (req, res) => {
     const byQuestionId = new Map(questionPool.map(q => [q.questionId, q]));
     const fallback = deterministicQuestionVisualRecommendations(questionPool, limit);
     const aiCfg = getAiRequestConfig(req);
+    const cacheKey = aiCacheKey('recommend-visuals', { limit, normalized }, aiCfg);
+    const cachedVisuals = aiJsonCache.get(cacheKey);
+    if (cachedVisuals) return res.json(cachedVisuals);
     const aiOut = await requestViaProviderManager({
       ...aiCfg,
       messages: [
@@ -1634,13 +1657,15 @@ app.post('/api/recommend-visuals', async (req, res) => {
       }
     }
 
-    return res.json({
+    const visualsPayload = {
       visuals: selected.map(item => ({ key: item.key, why: item.why, questionId: item.questionId })),
       internalQuestions: selected.map(item => ({ questionId: item.questionId, businessQuestion: item.businessQuestion, key: item.key })),
       mode: 'ai',
       provider: aiOut.provider,
       model: aiOut.model
-    });
+    };
+    putAiJsonCache(cacheKey, visualsPayload);
+    return res.json(visualsPayload);
   } catch (e) {
     console.error('[/api/recommend-visuals] error:', e.message);
     return res.status(500).json({ error: e.message });
@@ -1963,7 +1988,9 @@ async function handleChartsRequest(req, res) {
     const profile = await dataProfiler.profileTable(tableName, sql => cm.executeSQL(sql), { whereSql });
     if (!profile.rowCount) return res.json({ charts: [], profile, interpretation: null, appliedFilters: filters });
 
-    // 2. Interpret (LLM)
+    // 2. Interpret (LLM) — cached per table+filters+column-signature so a
+    // dashboard refresh doesn't re-hit the LLM when nothing about the schema
+    // or sample distribution changed.
     let interpretation = null;
     try {
       const colSummary = profile.columns.map(c => ({
@@ -1972,23 +1999,30 @@ async function handleChartsRequest(req, res) {
         cv: c.cv != null ? +c.cv.toFixed(3) : null,
         topValues: (c.topValues||[]).slice(0,3).map(v=>v.value)
       }));
-      for (const model of MODEL_CANDIDATES) {
-        try {
-          const resp = await fetch(OPENAI_ENDPOINT, {
-            method: 'POST', headers: openaiHeaders(),
-            body: JSON.stringify({
-              model, max_tokens: 400, temperature: 0, top_p: 1, seed: 42,
-              messages: [
-                { role: 'system', content: INTERPRET_TABLE_SYSTEM },
-                { role: 'user',   content: `Table: "${tableName}"\nRow count: ${profile.rowCount}\nColumns:\n${JSON.stringify(colSummary, null, 2)}` }
-              ]
-            })
-          });
-          const data = await resp.json();
-          if (!resp.ok) { if ((data?.error?.message||'').toLowerCase().includes('model')) continue; break; }
-          interpretation = extractJson(parseOpenAIAnswer(data));
-          if (interpretation) break;
-        } catch (_) {}
+      const interpretCacheKey = aiCacheKey('interpret-table', { tableName, whereSql, rowCount: profile.rowCount, colSummary });
+      const cachedInterpretation = aiJsonCache.get(interpretCacheKey);
+      if (cachedInterpretation) {
+        interpretation = cachedInterpretation;
+      } else {
+        for (const model of MODEL_CANDIDATES) {
+          try {
+            const resp = await fetch(OPENAI_ENDPOINT, {
+              method: 'POST', headers: openaiHeaders(),
+              body: JSON.stringify({
+                model, max_tokens: 400, temperature: 0, top_p: 1, seed: 42,
+                messages: [
+                  { role: 'system', content: INTERPRET_TABLE_SYSTEM },
+                  { role: 'user',   content: `Table: "${tableName}"\nRow count: ${profile.rowCount}\nColumns:\n${JSON.stringify(colSummary, null, 2)}` }
+                ]
+              })
+            });
+            const data = await resp.json();
+            if (!resp.ok) { if ((data?.error?.message||'').toLowerCase().includes('model')) continue; break; }
+            interpretation = extractJson(parseOpenAIAnswer(data));
+            if (interpretation) break;
+          } catch (_) {}
+        }
+        if (interpretation) putAiJsonCache(interpretCacheKey, interpretation);
       }
     } catch (_) {}
 
@@ -2652,6 +2686,10 @@ SAMPLE DATA (first 5 rows per table):
 ${JSON.stringify(sampleData || {}, null, 2)}`;
 
     const aiCfg = getAiRequestConfig(req);
+    const cacheKey = aiCacheKey('generate-story', { tableSchemas, sampleData }, aiCfg);
+    const cachedStory = aiJsonCache.get(cacheKey);
+    if (cachedStory) return res.json(cachedStory);
+
     const out = await requestViaProviderManager({
       ...aiCfg,
       max_tokens: 900,
@@ -2665,7 +2703,11 @@ ${JSON.stringify(sampleData || {}, null, 2)}`;
 
     if (!out.ok) return aiFailureResponse(res, out, 'Data story generation failed for the selected AI model.');
     const story = extractJson(out.text);
-    if (story) return res.json({ ...story, provider: out.provider, model: out.model });
+    if (story) {
+      const storyPayload = { ...story, provider: out.provider, model: out.model };
+      putAiJsonCache(cacheKey, storyPayload);
+      return res.json(storyPayload);
+    }
     return res.status(502).json({ code: 'AI_PROVIDER_FAILED', error: 'Selected AI model returned invalid story JSON.' });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

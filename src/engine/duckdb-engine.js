@@ -177,53 +177,83 @@ class DuckDBEngine {
     const names  = Object.keys(tables);
     const joins  = [];
     const noRelation = [];
+    // Strip case + punctuation/spacing so "Product ID" / "product_id" / "ProductId"
+    // are recognized as the same column instead of only matching verbatim.
+    const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
     for (let i = 0; i < names.length; i++) {
       for (let j = i + 1; j < names.length; j++) {
-        const tA   = names[i], tB = names[j];
-        const colsA = tables[tA].columns.map(c => c.name.toLowerCase());
-        const colsB = tables[tB].columns.map(c => c.name.toLowerCase());
+        const tA = names[i], tB = names[j];
+        const colsAOrig = tables[tA].columns.map(c => c.name);
+        const colsBOrig = tables[tB].columns.map(c => c.name);
+        const colsA = colsAOrig.map(c => c.toLowerCase());
+        const colsB = colsBOrig.map(c => c.toLowerCase());
 
-        const exactMatches = colsA.filter(c => colsB.includes(c));
-        if (exactMatches.length > 0) {
-          for (const col of exactMatches) {
-            const origA = tables[tA].columns.find(c => c.name.toLowerCase() === col)?.name || col;
-            const origB = tables[tB].columns.find(c => c.name.toLowerCase() === col)?.name || col;
-            // Quick overlap sample
-            const olap = await this._all(
-              `SELECT COUNT(*) AS cnt FROM (
-                 SELECT DISTINCT "${origA}" FROM "${tA}"
-                 INTERSECT
-                 SELECT DISTINCT "${origB}" FROM "${tB}"
-               )`
-            ).catch(() => [{ cnt: 0 }]);
+        const matchedA = new Set();
+        const matchedB = new Set();
+        let anyMatch = false;
+
+        // 1) Exact (case-insensitive) matches
+        for (let ai = 0; ai < colsA.length; ai++) {
+          const bi = colsB.indexOf(colsA[ai]);
+          if (bi === -1 || matchedB.has(bi)) continue;
+          matchedA.add(ai); matchedB.add(bi); anyMatch = true;
+          const origA = colsAOrig[ai], origB = colsBOrig[bi];
+          const olap = await this._all(
+            `SELECT COUNT(*) AS cnt FROM (
+               SELECT DISTINCT "${origA}" FROM "${tA}"
+               INTERSECT
+               SELECT DISTINCT "${origB}" FROM "${tB}"
+             )`
+          ).catch(() => [{ cnt: 0 }]);
+          joins.push({
+            tableA: tA, columnA: origA,
+            tableB: tB, columnB: origB,
+            confidence: Number(olap[0]?.cnt || 0) > 0 ? 0.95 : 0.6,
+            sampleOverlap: Number(olap[0]?.cnt || 0)
+          });
+        }
+
+        // 2) Normalized matches among columns not already matched exactly —
+        // catches naming-convention differences (spaces/underscores/case).
+        for (let ai = 0; ai < colsA.length; ai++) {
+          if (matchedA.has(ai)) continue;
+          const na = norm(colsA[ai]);
+          if (!na) continue;
+          for (let bi = 0; bi < colsB.length; bi++) {
+            if (matchedB.has(bi) || norm(colsB[bi]) !== na) continue;
+            matchedA.add(ai); matchedB.add(bi); anyMatch = true;
             joins.push({
-              tableA: tA, columnA: origA,
-              tableB: tB, columnB: origB,
-              confidence: Number(olap[0]?.cnt || 0) > 0 ? 0.95 : 0.6,
-              sampleOverlap: Number(olap[0]?.cnt || 0)
+              tableA: tA, columnA: colsAOrig[ai],
+              tableB: tB, columnB: colsBOrig[bi],
+              confidence: 0.85, sampleOverlap: 0,
+              note: 'Normalized name match'
             });
+            break;
           }
-        } else {
-          // Levenshtein-lite: check shortened names
-          let fuzzyFound = false;
-          for (const ca of colsA) {
-            for (const cb of colsB) {
-              if (ca !== cb && levenshtein(ca, cb) <= 3) {
-                joins.push({
-                  tableA: tA, columnA: ca,
-                  tableB: tB, columnB: cb,
-                  confidence: 0.4,
-                  sampleOverlap: 0,
-                  note: 'Fuzzy name match'
-                });
-                fuzzyFound = true;
-              }
+        }
+
+        // 3) Levenshtein-lite fuzzy match among whatever's still unmatched —
+        // always attempted, even when this table pair already has exact/normalized matches.
+        for (let ai = 0; ai < colsA.length; ai++) {
+          if (matchedA.has(ai)) continue;
+          for (let bi = 0; bi < colsB.length; bi++) {
+            if (matchedB.has(bi) || colsA[ai] === colsB[bi]) continue;
+            if (levenshtein(colsA[ai], colsB[bi]) <= 3) {
+              matchedA.add(ai); matchedB.add(bi); anyMatch = true;
+              joins.push({
+                tableA: tA, columnA: colsAOrig[ai],
+                tableB: tB, columnB: colsBOrig[bi],
+                confidence: 0.4, sampleOverlap: 0,
+                note: 'Fuzzy name match'
+              });
+              break;
             }
           }
-          if (!fuzzyFound) {
-            noRelation.push(`${tA} has no common columns with ${tB} — treat as independent datasets`);
-          }
+        }
+
+        if (!anyMatch) {
+          noRelation.push(`${tA} has no common columns with ${tB} — treat as independent datasets`);
         }
       }
     }
