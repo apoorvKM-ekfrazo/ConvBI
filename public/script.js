@@ -23,47 +23,30 @@ let glossaryMap = {};
 const SIDEBAR_PIN_KEY = 'convbi_sidebar_pinned';
 const QA_DETAILS_KEY = 'convbi_qa_show_details';
 const TABLE_LIBRARY_EXPANDED_KEY = 'convbi_table_library_expanded';
-const AI_SELECTION_KEY = 'convbi_ai_selection';
 const NAV_STATE_KEYS = ['tab', 'source', 'flow'];
 let navStateSuspended = false;
 let lastNavStateKey = '';
 let tableLibraryExpanded = localStorage.getItem(TABLE_LIBRARY_EXPANDED_KEY) === 'true';
-let aiOptionsCache = [];
-let aiSelection = { provider: '', model: '', strict: true };
-
-function loadAiSelection() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(AI_SELECTION_KEY) || '{}');
-    aiSelection = {
-      provider: String(parsed.provider || '').trim().toLowerCase(),
-      model: String(parsed.model || '').trim(),
-      strict: parsed.strict !== false
-    };
-  } catch (_) {
-    aiSelection = { provider: '', model: '', strict: true };
-  }
-}
-
-function saveAiSelection() {
-  localStorage.setItem(AI_SELECTION_KEY, JSON.stringify(aiSelection));
-}
+// AI provider/model is fixed — no user-facing selector.
+const aiSelection = { provider: 'openai', model: 'gpt-4o-mini', strict: true };
 
 function getAiHeaders() {
   return {
-    'X-AI-Provider': aiSelection.provider || '',
-    'X-AI-Model': aiSelection.model || '',
-    'X-AI-Strict': aiSelection.strict ? 'true' : 'false'
+    'X-AI-Provider': aiSelection.provider,
+    'X-AI-Model': aiSelection.model,
+    'X-AI-Strict': 'true'
   };
 }
 
-function aiFailureMessage(message) {
-  const msg = String(message || 'Selected AI model failed. Please switch model and retry.');
-  showError(`${msg} Use AI model selector in top bar and retry.`);
-  const sel = document.getElementById('aiModelSelect');
-  if (sel) {
-    sel.classList.add('ai-model-attention');
-    setTimeout(() => sel.classList.remove('ai-model-attention'), 2500);
-  }
+function aiFailureMessage(message, attempted) {
+  const msg = String(message || 'AI request failed.');
+  const reasons = Array.isArray(attempted)
+    ? attempted
+        .filter(a => a && a.error)
+        .map(a => `${[a.provider, a.model].filter(Boolean).join('/')}: ${a.error}${a.status ? ` (HTTP ${a.status})` : ''}`)
+    : [];
+  const detail = reasons.length ? ` Reason: ${reasons.join('; ')}.` : '';
+  showError(`${msg}${detail}`);
 }
 
 function updateAiModelStatus(text) {
@@ -71,74 +54,8 @@ function updateAiModelStatus(text) {
   if (status) status.textContent = text;
 }
 
-function aiOptionValue(provider, model) {
-  return `${provider}::${model}`;
-}
-
-function aiOptionLabel(provider, model) {
-  return `${provider.toUpperCase()} / ${model}`;
-}
-
-function applyAiSelectorOptions(optionsData) {
-  const sel = document.getElementById('aiModelSelect');
-  if (!sel) return;
-  const providers = Array.isArray(optionsData?.providers) ? optionsData.providers : [];
-  const choices = [];
-  providers.forEach(p => {
-    const provider = String(p.provider || '').trim().toLowerCase();
-    (Array.isArray(p.models) ? p.models : []).forEach(m => {
-      const model = String(m || '').trim();
-      if (!provider || !model) return;
-      choices.push({ provider, model });
-    });
-  });
-
-  if (!choices.length) {
-    sel.innerHTML = '<option value="">AI unavailable</option>';
-    sel.disabled = true;
-    updateAiModelStatus('AI: unavailable');
-    return;
-  }
-
-  const defaults = optionsData?.defaultSelection || {};
-  const defaultProvider = String(defaults.provider || choices[0].provider || '').toLowerCase();
-  const defaultModel = String(defaults.model || choices[0].model || '');
-
-  if (!aiSelection.provider || !aiSelection.model) {
-    aiSelection.provider = defaultProvider;
-    aiSelection.model = defaultModel;
-    aiSelection.strict = true;
-    saveAiSelection();
-  }
-
-  const activeKey = aiOptionValue(aiSelection.provider, aiSelection.model);
-  const availableKeys = new Set(choices.map(c => aiOptionValue(c.provider, c.model)));
-  if (!availableKeys.has(activeKey)) {
-    aiSelection.provider = defaultProvider;
-    aiSelection.model = defaultModel;
-    aiSelection.strict = true;
-    saveAiSelection();
-  }
-
-  sel.innerHTML = choices
-    .map(c => `<option value="${aiOptionValue(c.provider, c.model)}">${aiOptionLabel(c.provider, c.model)}</option>`)
-    .join('');
-  sel.value = aiOptionValue(aiSelection.provider, aiSelection.model);
-  sel.disabled = false;
-  updateAiModelStatus(`AI: ${aiSelection.provider.toUpperCase()} / ${aiSelection.model}`);
-}
-
 async function loadAiOptions() {
-  try {
-    const res = await fetch(`${API}/api/ai/options`);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Could not load AI options');
-    aiOptionsCache = data.providers || [];
-    applyAiSelectorOptions(data);
-  } catch (e) {
-    aiFailureMessage(e.message);
-    applyAiSelectorOptions({ providers: [] });
-  }
+  updateAiModelStatus(`AI: ${aiSelection.provider.toUpperCase()} / ${aiSelection.model}`);
 }
 
 async function aiFetchJson(url, init = {}) {
@@ -146,7 +63,7 @@ async function aiFetchJson(url, init = {}) {
   const res = await fetch(url, { ...init, headers });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (String(data.code || '').startsWith('AI_')) aiFailureMessage(data.error || 'AI request failed.');
+    if (String(data.code || '').startsWith('AI_')) aiFailureMessage(data.error || 'AI request failed.', data.attempted);
     const err = new Error(data.error || `Request failed (${res.status})`);
     err.payload = data;
     throw err;
@@ -3878,19 +3795,7 @@ function setupScrollReveal() {
   // the Dashboard's "Ask about this" link back to the Data Input tab.
   navStateSuspended = true;
 
-  loadAiSelection();
   await loadAiOptions();
-
-  const aiSel = document.getElementById('aiModelSelect');
-  aiSel?.addEventListener('change', () => {
-    const raw = String(aiSel.value || '');
-    const [provider, model] = raw.split('::');
-    if (!provider || !model) return;
-    aiSelection = { provider, model, strict: true };
-    saveAiSelection();
-    updateAiModelStatus(`AI: ${provider.toUpperCase()} / ${model}`);
-    showSuccess(`AI model changed to ${provider.toUpperCase()} / ${model}`);
-  });
 
   const loadBtn = document.getElementById('loadBtn');
   if (loadBtn) {

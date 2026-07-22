@@ -17,42 +17,26 @@ let filtersPanelExpanded = false;
 let dashboardTableScope = new Set(); // tables in scope for Overview/Charts (empty = all)
 const DASHBOARD_SCOPE_KEY = 'convbi_dashboard_table_scope';
 const STORY_DETAILS_KEY = 'convbi_story_show_details';
-const AI_SELECTION_KEY = 'convbi_ai_selection';
-let aiSelection = { provider: '', model: '', strict: true };
-
-function loadAiSelection() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(AI_SELECTION_KEY) || '{}');
-    aiSelection = {
-      provider: String(parsed.provider || '').trim().toLowerCase(),
-      model: String(parsed.model || '').trim(),
-      strict: parsed.strict !== false
-    };
-  } catch (_) {
-    aiSelection = { provider: '', model: '', strict: true };
-  }
-}
-
-function saveAiSelection() {
-  localStorage.setItem(AI_SELECTION_KEY, JSON.stringify(aiSelection));
-}
+// AI provider/model is fixed — no user-facing selector.
+const aiSelection = { provider: 'openai', model: 'gpt-4o-mini', strict: true };
 
 function aiHeaders() {
   return {
-    'X-AI-Provider': aiSelection.provider || '',
-    'X-AI-Model': aiSelection.model || '',
-    'X-AI-Strict': aiSelection.strict ? 'true' : 'false'
+    'X-AI-Provider': aiSelection.provider,
+    'X-AI-Model': aiSelection.model,
+    'X-AI-Strict': 'true'
   };
 }
 
-function dbAiFail(message) {
-  const msg = String(message || 'Selected AI model failed. Please switch model and retry.');
-  alert(`${msg}\n\nUse the AI model selector in the top bar and retry.`);
-  const sel = document.getElementById('dbAiModelSelect');
-  if (sel) {
-    sel.classList.add('db-ai-model-attention');
-    setTimeout(() => sel.classList.remove('db-ai-model-attention'), 2500);
-  }
+function dbAiFail(message, attempted) {
+  const msg = String(message || 'AI request failed.');
+  const reasons = Array.isArray(attempted)
+    ? attempted
+        .filter(a => a && a.error)
+        .map(a => `${[a.provider, a.model].filter(Boolean).join('/')}: ${a.error}${a.status ? ` (HTTP ${a.status})` : ''}`)
+    : [];
+  const detail = reasons.length ? `\n\nReason:\n${reasons.join('\n')}` : '';
+  alert(`${msg}${detail}`);
 }
 
 async function aiFetchJson(url, init = {}) {
@@ -60,7 +44,7 @@ async function aiFetchJson(url, init = {}) {
   const res = await fetch(url, { ...init, headers });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (String(data.code || '').startsWith('AI_')) dbAiFail(data.error);
+    if (String(data.code || '').startsWith('AI_')) dbAiFail(data.error, data.attempted);
     const err = new Error(data.error || `Request failed (${res.status})`);
     err.payload = data;
     throw err;
@@ -68,75 +52,9 @@ async function aiFetchJson(url, init = {}) {
   return data;
 }
 
-function aiValue(provider, model) {
-  return `${provider}::${model}`;
-}
-
-function applyDashboardAiSelection(optionsData) {
-  const sel = document.getElementById('dbAiModelSelect');
-  const status = document.getElementById('dbAiModelStatus');
-  if (!sel || !status) return;
-
-  const providers = Array.isArray(optionsData?.providers) ? optionsData.providers : [];
-  const choices = [];
-  providers.forEach(p => {
-    const provider = String(p.provider || '').trim().toLowerCase();
-    (Array.isArray(p.models) ? p.models : []).forEach(m => {
-      const model = String(m || '').trim();
-      if (!provider || !model) return;
-      choices.push({ provider, model });
-    });
-  });
-
-  if (!choices.length) {
-    sel.innerHTML = '<option value="">AI unavailable</option>';
-    sel.disabled = true;
-    status.textContent = 'AI: unavailable';
-    return;
-  }
-
-  const defaults = optionsData?.defaultSelection || {};
-  const defaultProvider = String(defaults.provider || choices[0].provider || '').toLowerCase();
-  const defaultModel = String(defaults.model || choices[0].model || '');
-  if (!aiSelection.provider || !aiSelection.model) {
-    aiSelection = { provider: defaultProvider, model: defaultModel, strict: true };
-    saveAiSelection();
-  }
-
-  const keys = new Set(choices.map(c => aiValue(c.provider, c.model)));
-  if (!keys.has(aiValue(aiSelection.provider, aiSelection.model))) {
-    aiSelection = { provider: defaultProvider, model: defaultModel, strict: true };
-    saveAiSelection();
-  }
-
-  sel.innerHTML = choices.map(c => `<option value="${aiValue(c.provider, c.model)}">${c.provider.toUpperCase()} / ${c.model}</option>`).join('');
-  sel.value = aiValue(aiSelection.provider, aiSelection.model);
-  sel.disabled = false;
-  status.textContent = `AI: ${aiSelection.provider.toUpperCase()} / ${aiSelection.model}`;
-}
-
 async function initDashboardAiSelection() {
-  loadAiSelection();
-  const sel = document.getElementById('dbAiModelSelect');
-  try {
-    const res = await fetch(`${API}/api/ai/options`);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Could not load AI options');
-    applyDashboardAiSelection(data);
-  } catch (e) {
-    dbAiFail(e.message);
-    applyDashboardAiSelection({ providers: [] });
-  }
-
-  sel?.addEventListener('change', () => {
-    const [provider, model] = String(sel.value || '').split('::');
-    if (!provider || !model) return;
-    aiSelection = { provider, model, strict: true };
-    saveAiSelection();
-    const status = document.getElementById('dbAiModelStatus');
-    if (status) status.textContent = `AI: ${provider.toUpperCase()} / ${model}`;
-    loadDashboard();
-  });
+  const status = document.getElementById('dbAiModelStatus');
+  if (status) status.textContent = `AI: ${aiSelection.provider.toUpperCase()} / ${aiSelection.model}`;
 }
 
 const CHART_TYPE_SEQUENCE = ['auto', 'bar', 'hbar', 'line', 'area', 'donut', 'rose', 'scatter'];

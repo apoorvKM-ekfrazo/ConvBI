@@ -340,6 +340,9 @@ function aiFailureResponse(res, out, fallbackMessage = 'Selected AI provider fai
   const status = out?.code === 'AI_PROVIDER_UNAVAILABLE' || out?.code === 'AI_MODEL_INVALID' || out?.code === 'AI_PROVIDER_INVALID'
     ? 400
     : 502;
+  if (Array.isArray(out?.attempted) && out.attempted.length) {
+    console.error('[AI] provider call failed:', JSON.stringify(out.attempted));
+  }
   return res.status(status).json({
     code: out?.code || 'AI_PROVIDER_FAILED',
     error: out?.error || fallbackMessage,

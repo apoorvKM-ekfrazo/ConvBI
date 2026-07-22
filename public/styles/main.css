@@ -1,22 +1,8 @@
-.ai-model-select {
-  min-width: 180px;
-  max-width: 240px;
-}
-.ai-model-select option {
-  background: var(--surface-raised, #FFFFFF);
-  color: var(--text-primary, #111827);
-}
-
 .ai-model-status {
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.ai-model-attention {
-  outline: 2px solid #ef4444;
-  outline-offset: 2px;
 }
 :root {
   --bg-canvas: #FFFFFF;
@@ -383,25 +369,6 @@ select {
   color: var(--text-primary);
   padding: 8px 12px;
   width: 300px;
-}
-
-.ai-model-select {
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--text-primary);
-  min-height: 34px;
-  padding: 0 12px;
-  font-weight: 600;
-  font-size: 13px;
-  cursor: pointer;
-  transition: background .15s ease, border-color .15s ease;
-}
-.ai-model-select:hover,
-.ai-model-select:focus {
-  background: var(--surface-raised);
-  border-color: var(--border-subtle);
-  outline: none;
 }
 
 .ai-model-status {
