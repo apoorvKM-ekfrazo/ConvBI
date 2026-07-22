@@ -93,7 +93,9 @@ async function _scoreCandidate(candidate, tableName, columns, rowCount, primaryM
   if (!xP || !yP)                                               return { ...candidate, score: 0, option: null };
   if (['id-like','constant'].includes(xP.semanticType))         return { ...candidate, score: 0, option: null };
   if (['id-like','constant'].includes(yP.semanticType))         return { ...candidate, score: 0, option: null };
-  if (xP.distinctCount > 50)                                    return { ...candidate, score: 0, option: null };
+  // Too many bars/slices to read — only applies to categorical x-axes (bar/donut).
+  // Line (date axis) and scatter (numeric axis) are expected to have many distinct x values.
+  if ((type === 'bar' || type === 'donut') && xP.distinctCount > 50) return { ...candidate, score: 0, option: null };
   if (rowCount < 2)                                             return { ...candidate, score: 0, option: null };
 
   let score = 0;

@@ -1689,13 +1689,12 @@ async function uploadStagedFiles() {
     clearPendingFiles();
     await refreshTableLibrary();
 
-    const count = data.tables.length;
-    if (count > 0) {
-      await autoFinishDataInput(`${count} table${count > 1 ? 's' : ''} loaded and ready to explore.`);
-    } else {
-      renderImportResult(data);
-      goToWizardStep(8, { force: true });
-    }
+    // Always show the import summary (with per-table selection) instead of
+    // silently auto-selecting every table and jumping straight to the
+    // dashboard — the user should get a chance to review/deselect tables
+    // first.
+    renderImportResult(data);
+    goToWizardStep(8, { force: true });
   } catch (e) {
     setUploadVisualState('error');
     showError('Upload error: ' + e.message);
@@ -1876,9 +1875,28 @@ function renderAnalyticsFlowStepSelect() {
     <div class="flow-actions">
       <button class="flow-btn-secondary" onclick="selectAllAnalyticsTables()">Select All</button>
       <button class="flow-btn-secondary" onclick="clearAnalyticsTableSelection()">Clear</button>
-      <button class="submit-btn" onclick="goToStructureStep()">Save and Open Schema Review</button>
+      <button class="flow-btn-secondary" onclick="goToStructureStep()">Review Schema &amp; Relationships</button>
+      <button class="submit-btn" onclick="continueSelectionToDashboard()">Continue to Dashboard</button>
     </div>
   `;
+}
+
+// ── Skip the optional schema-review/relationship steps and go straight to
+// the dashboard with whichever tables are currently checked. ──────────────
+function continueSelectionToDashboard() {
+  if (!selectedAnalyticsTables.size) {
+    showError('Select at least one table to continue.');
+    return;
+  }
+  activeTableSet = new Set(selectedAnalyticsTables);
+  persistAnalyticsPreferences();
+  syncQAAvailability();
+  refreshTableContextBar();
+  markWizardStepDone(9);
+  markWizardStepDone(10);
+  markWizardStepDone(11);
+  showSuccess(`${selectedAnalyticsTables.size} table${selectedAnalyticsTables.size > 1 ? 's' : ''} selected. Opening dashboard...`);
+  goToDashboardOverview();
 }
 
 function filterFlowTables(query) {

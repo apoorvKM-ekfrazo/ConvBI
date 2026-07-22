@@ -2,44 +2,90 @@
 
 const fs   = require('fs');
 const path = require('path');
-const os   = require('os');
 
+// DuckDB compiled to WASM instead of the native `duckdb` addon: the native
+// binary is an unsigned Windows .node file, which Smart App Control / WDAC
+// environments refuse to dlopen (Code Integrity policy violation). The WASM
+// build is plain bytecode executed by V8 like any other JS dependency, so it
+// isn't subject to that native-code signing check, while still being real
+// DuckDB — same SQL dialect (date_trunc, TRY_CAST, PIVOT, window functions,
+// read_csv_auto/read_json_auto/read_parquet, etc.) that the rest of this app
+// (and the AI SQL-generation prompt) already assumes.
 let duckdb;
+let pkgDir;
 try {
-  duckdb = require('duckdb');
+  const entryPath = require.resolve('@duckdb/duckdb-wasm/dist/duckdb-node-blocking.cjs');
+  duckdb = require(entryPath);
+  pkgDir = path.dirname(path.dirname(entryPath)); // .../dist/duckdb-node-blocking.cjs → package root
 } catch (_) {
   // Package not yet installed — engine will throw on first use with a helpful message
 }
 
+function bundlePaths() {
+  const dist = path.join(pkgDir, 'dist');
+  return {
+    mvp: {
+      mainModule: path.join(dist, 'duckdb-mvp.wasm'),
+      mainWorker: path.join(dist, 'duckdb-node-mvp.worker.cjs'),
+    },
+    eh: {
+      mainModule: path.join(dist, 'duckdb-eh.wasm'),
+      mainWorker: path.join(dist, 'duckdb-node-eh.worker.cjs'),
+    },
+  };
+}
+
 class DuckDBEngine {
   constructor() {
-    this._db   = null;
+    this._bindings = null;
     this._conn = null;
+    this._initPromise = null;
     this._tables = new Map();        // tableName → { rowCount, columns, source, meta }
-    this._queue  = [];
-    this._active = 0;
-    this.MAX_CONCURRENT = 4;
+    this._fileSeq = 0;
   }
 
-  _init() {
+  async _init() {
     if (this._conn) return;
-    if (!duckdb) throw new Error('DuckDB not installed. Run: npm install duckdb');
-    this._db   = new duckdb.Database(':memory:');
-    this._conn = this._db.connect();
+    if (this._initPromise) return this._initPromise;
+    if (!duckdb) throw new Error('DuckDB engine not installed. Run: npm install @duckdb/duckdb-wasm');
+
+    this._initPromise = (async () => {
+      const logger = new duckdb.VoidLogger();
+      this._bindings = await duckdb.createDuckDB(bundlePaths(), logger, duckdb.NODE_RUNTIME);
+      await this._bindings.instantiate(() => {});
+      await this._bindings.open({});
+      this._conn = this._bindings.connect();
+    })();
+    return this._initPromise;
   }
 
-  _run(sql) {
-    this._init();
-    return new Promise((resolve, reject) => {
-      this._conn.run(sql, err => (err ? reject(err) : resolve()));
-    });
+  async _run(sql) {
+    await this._init();
+    this._conn.query(sql);
   }
 
-  _all(sql) {
-    this._init();
-    return new Promise((resolve, reject) => {
-      this._conn.all(sql, (err, rows) => (err ? reject(err) : resolve(sanitizeBigInt(rows || []))));
+  async _all(sql) {
+    await this._init();
+    const result = this._conn.query(sql);
+
+    const dateFields = new Set();
+    const tsFields    = new Set();
+    for (const f of result.schema.fields) {
+      const t = String(f.type);
+      if (t.startsWith('Date'))      dateFields.add(f.name);
+      else if (t.startsWith('Timestamp')) tsFields.add(f.name);
+    }
+
+    const rows = result.toArray().map(r => {
+      const obj = r.toJSON();
+      for (const k of Object.keys(obj)) {
+        if (typeof obj[k] !== 'number') continue;
+        if (dateFields.has(k)) obj[k] = new Date(obj[k]).toISOString().slice(0, 10);
+        else if (tsFields.has(k)) obj[k] = new Date(obj[k]).toISOString();
+      }
+      return obj;
     });
+    return sanitizeBigInt(rows);
   }
 
   // ── safe name: strip anything that isn't alphanumeric or underscore ──────────
@@ -47,55 +93,107 @@ class DuckDBEngine {
     return (name || 'table').replace(/[^a-zA-Z0-9_]/g, '_').replace(/^(\d)/, '_$1');
   }
 
-  // ── write JS array to a temp JSON file, let DuckDB read it ──────────────────
+  // ── register a JS array of rows as a virtual file DuckDB reads directly ─────
   async registerTable(name, data) {
     if (!Array.isArray(data) || !data.length) throw new Error('Data must be a non-empty array');
+    await this._init();
 
     const safeName = this._safe(name);
-    const tmpFile  = path.join(os.tmpdir(), `convbi_${safeName}_${Date.now()}.json`);
-    const duckPath = tmpFile.replace(/\\/g, '/');
+    const virtualName = `mem_${safeName}_${Date.now()}_${this._fileSeq++}.json`;
 
+    // Normalize date strings in data before saving
+    const normalized = data.map(row => {
+      const out = {};
+      for (const [k, v] of Object.entries(row)) {
+        out[k] = (typeof v === 'string' && /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(v.trim()))
+          ? normalizeMDY(v.trim())
+          : v;
+      }
+      return out;
+    });
+
+    this._bindings.registerFileText(virtualName, JSON.stringify(normalized));
     try {
-      // Normalize date strings in data before saving
-      const normalized = data.map(row => {
-        const out = {};
-        for (const [k, v] of Object.entries(row)) {
-          out[k] = (typeof v === 'string' && /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(v.trim()))
-            ? normalizeMDY(v.trim())
-            : v;
-        }
-        return out;
-      });
-      fs.writeFileSync(tmpFile, JSON.stringify(normalized));
-      await this._run(`CREATE OR REPLACE TABLE "${safeName}" AS SELECT * FROM read_json_auto('${duckPath}', format='array')`);
+      await this._run(`CREATE OR REPLACE TABLE "${safeName}" AS SELECT * FROM read_json_auto('${virtualName}', format='array')`);
     } finally {
-      try { fs.unlinkSync(tmpFile); } catch (_) {}
+      try { this._bindings.dropFile(virtualName); } catch (_) {}
     }
 
+    await this._coerceNumericColumns(safeName);
     const schema = await this.getTableSchema(safeName);
     this._tables.set(safeName, { ...schema, source: 'api', originalName: name });
     return { tableName: safeName, rowCount: schema.rowCount, columns: schema.columns };
   }
 
-  // ── register directly from a file path (CSV / Parquet) ──────────────────────
+  // ── register directly from a file path (CSV / Parquet / JSON) ───────────────
   async registerFromFile(name, filePath, fileType) {
+    await this._init();
     const safeName = this._safe(name);
-    const duckPath = filePath.replace(/\\/g, '/');
+    const virtualName = `mem_${safeName}_${Date.now()}_${this._fileSeq++}${path.extname(filePath) || ''}`;
 
-    if (fileType === 'csv' || fileType === 'tsv') {
-      const sep = fileType === 'tsv' ? "\\t" : ',';
-      await this._run(`CREATE OR REPLACE TABLE "${safeName}" AS SELECT * FROM read_csv_auto('${duckPath}', delim='${sep}', header=true)`);
-    } else if (fileType === 'parquet') {
-      await this._run(`CREATE OR REPLACE TABLE "${safeName}" AS SELECT * FROM read_parquet('${duckPath}')`);
-    } else if (fileType === 'json') {
-      await this._run(`CREATE OR REPLACE TABLE "${safeName}" AS SELECT * FROM read_json_auto('${duckPath}')`);
-    } else {
-      throw new Error(`Unsupported file type: ${fileType}`);
+    this._bindings.registerFileBuffer(virtualName, fs.readFileSync(filePath));
+    try {
+      if (fileType === 'csv' || fileType === 'tsv') {
+        const sep = fileType === 'tsv' ? "\\t" : ',';
+        await this._run(`CREATE OR REPLACE TABLE "${safeName}" AS SELECT * FROM read_csv_auto('${virtualName}', delim='${sep}', header=true)`);
+      } else if (fileType === 'parquet') {
+        await this._run(`CREATE OR REPLACE TABLE "${safeName}" AS SELECT * FROM read_parquet('${virtualName}')`);
+      } else if (fileType === 'json') {
+        await this._run(`CREATE OR REPLACE TABLE "${safeName}" AS SELECT * FROM read_json_auto('${virtualName}')`);
+      } else {
+        throw new Error(`Unsupported file type: ${fileType}`);
+      }
+    } finally {
+      try { this._bindings.dropFile(virtualName); } catch (_) {}
     }
 
+    await this._coerceNumericColumns(safeName);
     const schema = await this.getTableSchema(safeName);
     this._tables.set(safeName, { ...schema, source: 'file', filePath });
     return { tableName: safeName, rowCount: schema.rowCount, columns: schema.columns };
+  }
+
+  // ── detect VARCHAR columns that are actually numbers wearing a costume
+  // (currency symbols, thousands separators, stray quotes from bad CSV
+  // quoting) and cast them to DOUBLE in place, so charting/stats treat them
+  // as measures instead of silently excluding them. ─────────────────────────
+  async _coerceNumericColumns(safeName) {
+    const cols = await this._all(
+      `SELECT column_name FROM information_schema.columns WHERE table_name='${safeName}' AND table_schema='main' AND data_type='VARCHAR' ORDER BY ordinal_position`
+    );
+    if (!cols.length) return;
+
+    const allCols = await this._all(
+      `SELECT column_name FROM information_schema.columns WHERE table_name='${safeName}' AND table_schema='main' ORDER BY ordinal_position`
+    );
+
+    let changed = false;
+    const selects = [];
+    for (const { column_name: name } of allCols) {
+      const q = `"${name}"`;
+      const isCandidate = cols.some(c => c.column_name === name);
+      if (!isCandidate) { selects.push(q); continue; }
+
+      const sample = await this._all(
+        `SELECT ${q} AS v FROM "${safeName}" WHERE ${q} IS NOT NULL AND trim(${q}) != '' LIMIT 50`
+      );
+      const vals = sample.map(r => String(r.v));
+      if (!vals.length) { selects.push(q); continue; }
+
+      const stripped = vals.map(v => v.trim().replace(/^"+|"+$/g, '').replace(/^[$₹€£]\s*/, '').replace(/,/g, ''));
+      const numericLike = stripped.filter(v => /^-?\d+(\.\d+)?$/.test(v));
+
+      if (numericLike.length / vals.length >= 0.9) {
+        selects.push(`TRY_CAST(REGEXP_REPLACE(REPLACE(${q}, '"', ''), '[^0-9.-]', '', 'g') AS DOUBLE) AS ${q}`);
+        changed = true;
+      } else {
+        selects.push(q);
+      }
+    }
+
+    if (changed) {
+      await this._run(`CREATE OR REPLACE TABLE "${safeName}" AS SELECT ${selects.join(', ')} FROM "${safeName}"`);
+    }
   }
 
   // ── execute arbitrary SQL with timeout ──────────────────────────────────────
@@ -121,7 +219,7 @@ class DuckDBEngine {
   // ── list all registered tables with schemas ──────────────────────────────────
   async listTables() {
     try {
-      this._init();
+      await this._init();
     } catch (_) {
       return {};
     }
@@ -280,11 +378,11 @@ class DuckDBEngine {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-// DuckDB 1.x returns BIGINT as native BigInt and DATE as JS Date — both break JSON.stringify.
+// BIGINT/HUGEINT columns come back as native BigInt, which breaks JSON.stringify.
 function sanitizeBigInt(val) {
   if (val === null || val === undefined) return val;
   if (typeof val === 'bigint') return Number(val);
-  if (val instanceof Date)     return val.toISOString().slice(0, 10); // DATE → 'YYYY-MM-DD'
+  if (val instanceof Date)     return val.toISOString().slice(0, 10);
   if (Array.isArray(val))      return val.map(sanitizeBigInt);
   if (typeof val === 'object') {
     const out = {};
